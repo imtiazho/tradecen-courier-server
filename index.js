@@ -1813,7 +1813,7 @@ app.post("/parcels", async (req, res) => {
   }
 });
 
-app.delete("/parcel/:id", async (req, res) => {
+app.delete("/parcel/:id", verifyFireBaseToken, verifyMerchantToken, verifyOwner, async (req, res) => {
   try {
     const { parcelsCollections } = await connectDB();
     const result = await parcelsCollections.deleteOne({
