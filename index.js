@@ -459,7 +459,7 @@ app.get(
   },
 );
 
-app.get("/parcels/pickups/:hubName", async (req, res) => {
+app.get("/parcels/pickups/:hubName", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
   try {
     const { parcelsCollections } = await connectDB();
     const hubName = req.params.hubName;
@@ -829,7 +829,7 @@ app.post("/riders", async (req, res) => {
 app.get(
   "/riders",
   verifyFireBaseToken,
-  verifyRoles("admin", "hub-manager"),
+  verifyRoles("admin", "hub-manager", "rider"),
   async (req, res) => {
     try {
       const { ridersCollections } = await connectDB();
@@ -861,25 +861,30 @@ app.get(
   },
 );
 
-app.get("/riders/available/:areaName", async (req, res) => {
-  try {
-    const { areaName } = req.params;
-    const { ridersCollections } = await connectDB();
+app.get(
+  "/riders/available/:areaName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { areaName } = req.params;
+      const { ridersCollections } = await connectDB();
 
-    const query = {
-      area: areaName,
-      workStatus: "available",
-      currentTasks: { $lt: 10 },
-    };
+      const query = {
+        area: areaName,
+        workStatus: "available",
+        currentTasks: { $lt: 10 },
+      };
 
-    const riders = await ridersCollections.find(query).toArray();
-    res.status(200).send(riders);
-  } catch (error) {
-    res
-      .status(500)
-      .send({ message: "Error fetching riders", error: error.message });
-  }
-});
+      const riders = await ridersCollections.find(query).toArray();
+      res.status(200).send(riders);
+    } catch (error) {
+      res
+        .status(500)
+        .send({ message: "Error fetching riders", error: error.message });
+    }
+  },
+);
 
 app.patch(
   "/riders/:id",
@@ -934,63 +939,74 @@ app.patch(
   },
 );
 
-app.patch("/parcels/assign-rider", async (req, res) => {
-  try {
-    const { parcelId, riderId, riderName, riderEmail, riderPhone, trackingID } =
-      req.body;
-    const { parcelsCollections, ridersCollections } = await connectDB();
-    const parcelData = await parcelsCollections.findOne({
-      _id: new ObjectId(parcelId),
-    });
-    await logTracking(parcelData, "assign-pickup-rider");
+app.patch(
+  "/parcels/assign-rider",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const {
+        parcelId,
+        riderId,
+        riderName,
+        riderEmail,
+        riderPhone,
+        trackingID,
+      } = req.body;
+      const { parcelsCollections, ridersCollections } = await connectDB();
+      const parcelData = await parcelsCollections.findOne({
+        _id: new ObjectId(parcelId),
+      });
+      await logTracking(parcelData, "assign-pickup-rider");
 
-    const parcelUpdate = await parcelsCollections.updateOne(
-      { _id: new ObjectId(parcelId) },
-      {
-        $set: {
-          deliveryStatus: "assign-pickup-rider",
-          pickupRider: {
-            id: riderId,
-            name: riderName,
-            email: riderEmail,
-            phone: riderPhone,
-            assignedAt: new Date(),
+      const parcelUpdate = await parcelsCollections.updateOne(
+        { _id: new ObjectId(parcelId) },
+        {
+          $set: {
+            deliveryStatus: "assign-pickup-rider",
+            pickupRider: {
+              id: riderId,
+              name: riderName,
+              email: riderEmail,
+              phone: riderPhone,
+              assignedAt: new Date(),
+            },
           },
         },
-      },
-    );
+      );
 
-    const riderUpdate = await ridersCollections.updateOne(
-      { _id: new ObjectId(riderId) },
-      {
-        $inc: { currentTasks: 1, totalAssign: 1 },
-        $push: {
-          activeTasks: {
-            parcelId: new ObjectId(parcelId),
-            trackingID: trackingID,
-            parcelName: parcelData.parcelName,
-            codAmount: parcelData.codAmount,
-            pickupLocation: parcelData.senderInfo.address,
-            merchantName: parcelData.senderInfo.name,
-            merchantPhone: parcelData.senderInfo.phone,
-            taskType: "pickup",
-            assignedAt: new Date(),
+      const riderUpdate = await ridersCollections.updateOne(
+        { _id: new ObjectId(riderId) },
+        {
+          $inc: { currentTasks: 1, totalAssign: 1 },
+          $push: {
+            activeTasks: {
+              parcelId: new ObjectId(parcelId),
+              trackingID: trackingID,
+              parcelName: parcelData.parcelName,
+              codAmount: parcelData.codAmount,
+              pickupLocation: parcelData.senderInfo.address,
+              merchantName: parcelData.senderInfo.name,
+              merchantPhone: parcelData.senderInfo.phone,
+              taskType: "pickup",
+              assignedAt: new Date(),
+            },
           },
         },
-      },
-    );
+      );
 
-    if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
-      res
-        .status(200)
-        .send({ success: true, message: "Rider assigned successfully" });
-    } else {
-      res.status(400).send({ message: "Assignment failed" });
+      if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
+        res
+          .status(200)
+          .send({ success: true, message: "Rider assigned successfully" });
+      } else {
+        res.status(400).send({ message: "Assignment failed" });
+      }
+    } catch (error) {
+      res.status(500).send({ message: "Server error", error: error.message });
     }
-  } catch (error) {
-    res.status(500).send({ message: "Server error", error: error.message });
-  }
-});
+  },
+);
 
 app.patch("/parcels/assign-delivery", async (req, res) => {
   try {
@@ -1873,7 +1889,7 @@ app.delete(
   },
 );
 
-app.patch("/parcels/dispatch/:id", async (req, res) => {
+app.patch("/parcels/dispatch/:id", verifyFireBaseToken, verifyMerchantToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { parcelsCollections } = await connectDB();
@@ -1905,7 +1921,7 @@ app.patch("/parcels/dispatch/:id", async (req, res) => {
   }
 });
 
-app.patch("/parcels/dest-hub/received/:id", async (req, res) => {
+app.patch("/parcels/dest-hub/received/:id", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { parcelsCollections } = await connectDB();
@@ -1936,7 +1952,7 @@ app.patch("/parcels/dest-hub/received/:id", async (req, res) => {
   }
 });
 
-app.patch("/parcels/origin-hub/received/:id", async (req, res) => {
+app.patch("/parcels/origin-hub/received/:id", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { parcelsCollections } = await connectDB();
