@@ -422,37 +422,42 @@ app.get(
   },
 );
 
-app.get("/parcels/incoming/:hubName", async (req, res) => {
-  try {
-    const { parcelsCollections } = await connectDB();
-    const hubName = req.params.hubName;
-    const query = {
-      $or: [
-        {
-          "serviceCenters.origin": hubName,
-          deliveryStatus: "parcel-created",
-        },
-        {
-          "serviceCenters.origin": hubName,
-          deliveryStatus: "assign-pickup-rider",
-        },
+app.get(
+  "/parcels/incoming/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { parcelsCollections } = await connectDB();
+      const hubName = req.params.hubName;
+      const query = {
+        $or: [
+          {
+            "serviceCenters.origin": hubName,
+            deliveryStatus: "parcel-created",
+          },
+          {
+            "serviceCenters.origin": hubName,
+            deliveryStatus: "assign-pickup-rider",
+          },
 
-        {
-          "serviceCenters.destination": hubName,
-          deliveryStatus: "in-transit",
-        },
-      ],
-    };
+          {
+            "serviceCenters.destination": hubName,
+            deliveryStatus: "in-transit",
+          },
+        ],
+      };
 
-    const result = await parcelsCollections.find(query).toArray();
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({
-      message: "Error fetching incoming parcels",
-      error: error.message,
-    });
-  }
-});
+      const result = await parcelsCollections.find(query).toArray();
+      res.send(result);
+    } catch (error) {
+      res.status(500).send({
+        message: "Error fetching incoming parcels",
+        error: error.message,
+      });
+    }
+  },
+);
 
 app.get("/parcels/pickups/:hubName", async (req, res) => {
   try {
@@ -473,71 +478,86 @@ app.get("/parcels/pickups/:hubName", async (req, res) => {
   }
 });
 
-app.get("/warehouse/sorting-house/:hubName", async (req, res) => {
-  try {
-    const { hubName } = req.params;
-    const { parcelsCollections } = await connectDB();
+app.get(
+  "/warehouse/sorting-house/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { hubName } = req.params;
+      const { parcelsCollections } = await connectDB();
 
-    const dispatchList = await parcelsCollections
-      .find({
-        deliveryStatus: "reached-origin-warehouse",
-        "senderInfo.area": hubName,
-      })
-      .toArray();
+      const dispatchList = await parcelsCollections
+        .find({
+          deliveryStatus: "reached-origin-warehouse",
+          "senderInfo.area": hubName,
+        })
+        .toArray();
 
-    const deliveryList = await parcelsCollections
-      .find({
-        deliveryStatus: "reached-destination-warehouse",
-        "receiverInfo.area": hubName,
-      })
-      .toArray();
+      const deliveryList = await parcelsCollections
+        .find({
+          deliveryStatus: "reached-destination-warehouse",
+          "receiverInfo.area": hubName,
+        })
+        .toArray();
 
-    res.send({
-      dispatchList,
-      deliveryList,
-      total: dispatchList.length + deliveryList.length,
-    });
-  } catch (error) {
-    res.status(500).send({ message: "Error sorting parcels" });
-  }
-});
+      res.send({
+        dispatchList,
+        deliveryList,
+        total: dispatchList.length + deliveryList.length,
+      });
+    } catch (error) {
+      res.status(500).send({ message: "Error sorting parcels" });
+    }
+  },
+);
 
-app.get("/parcels/out-for-delivery/:hubName", async (req, res) => {
-  try {
-    const { parcelsCollections } = await connectDB();
-    const { hubName } = req.params;
-    const query = {
-      "serviceCenters.destination": hubName,
-      deliveryStatus: {
-        $in: ["assign-delivery-rider", "hold"],
-      },
-    };
+app.get(
+  "/parcels/out-for-delivery/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { parcelsCollections } = await connectDB();
+      const { hubName } = req.params;
+      const query = {
+        "serviceCenters.destination": hubName,
+        deliveryStatus: {
+          $in: ["assign-delivery-rider", "hold"],
+        },
+      };
 
-    const result = await parcelsCollections.find(query).toArray();
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: "Error out for delivery parcels" });
-  }
-});
+      const result = await parcelsCollections.find(query).toArray();
+      res.send(result);
+    } catch (error) {
+      res.status(500).send({ message: "Error out for delivery parcels" });
+    }
+  },
+);
 
-app.get("/parcels/hub-delivered/:hubName", async (req, res) => {
-  try {
-    const { parcelsCollections } = await connectDB();
-    const { hubName } = req.params;
-    const query = {
-      "serviceCenters.destination": hubName,
-      deliveryStatus: "delivered",
-    };
+app.get(
+  "/parcels/hub-delivered/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { parcelsCollections } = await connectDB();
+      const { hubName } = req.params;
+      const query = {
+        "serviceCenters.destination": hubName,
+        deliveryStatus: "delivered",
+      };
 
-    const result = await parcelsCollections
-      .find(query)
-      .sort({ createdAt: -1 })
-      .toArray();
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: "Error out for delivery parcels" });
-  }
-});
+      const result = await parcelsCollections
+        .find(query)
+        .sort({ createdAt: -1 })
+        .toArray();
+      res.send(result);
+    } catch (error) {
+      res.status(500).send({ message: "Error out for delivery parcels" });
+    }
+  },
+);
 
 /*---- Rider Related APIs Start ----*/
 app.get(
@@ -806,36 +826,40 @@ app.post("/riders", async (req, res) => {
 //   }
 // });
 
-app.get("/riders", verifyFireBaseToken, async (req, res) => {
-  try {
-    const { ridersCollections } = await connectDB();
-    const { status, workStatus, email, area } = req.query;
-    let query = {};
-    console.log(req.decoded_email);
-    if (status) {
-      query.status = status;
+app.get(
+  "/riders",
+  verifyFireBaseToken,
+  verifyRoles("admin", "hub-manager"),
+  async (req, res) => {
+    try {
+      const { ridersCollections } = await connectDB();
+      const { status, workStatus, email, area } = req.query;
+      let query = {};
+      if (status) {
+        query.status = status;
+      }
+
+      if (workStatus) {
+        query.workStatus = workStatus;
+      }
+
+      if (email) {
+        query.email = email;
+      }
+
+      if (area) {
+        query.area = area;
+      }
+
+      const result = await ridersCollections.find(query).toArray();
+
+      res.status(200).send(result);
+    } catch (error) {
+      console.error("Error fetching riders:", error);
+      res.status(500).send({ message: "Internal Server Error" });
     }
-
-    if (workStatus) {
-      query.workStatus = workStatus;
-    }
-
-    if (email) {
-      query.email = email;
-    }
-
-    if (area) {
-      query.area = area;
-    }
-
-    const result = await ridersCollections.find(query).toArray();
-
-    res.status(200).send(result);
-  } catch (error) {
-    console.error("Error fetching riders:", error);
-    res.status(500).send({ message: "Internal Server Error" });
-  }
-});
+  },
+);
 
 app.get("/riders/available/:areaName", async (req, res) => {
   try {
@@ -1219,51 +1243,63 @@ app.post("/merchants", async (req, res) => {
   }
 });
 
-app.get("/merchant/:email", async (req, res) => {
-  try {
-    const { merchantsCollections } = await connectDB();
-    const email = req.params.email;
-    const merchant = await merchantsCollections.findOne({ email: email });
+app.get(
+  "/merchant/:email",
+  verifyFireBaseToken,
+  verifyMerchantToken,
+  verifyOwner,
+  async (req, res) => {
+    try {
+      const { merchantsCollections } = await connectDB();
+      const email = req.params.email;
+      const merchant = await merchantsCollections.findOne({ email: email });
 
-    if (!merchant) {
-      return res.status(404).send({
-        success: false,
-        message: "User not found in database",
-      });
-    }
+      if (!merchant) {
+        return res.status(404).send({
+          success: false,
+          message: "User not found in database",
+        });
+      }
 
-    res.send({
-      success: true,
-      role: merchant.role,
-      email: merchant.email,
-      ...merchant,
-    });
-  } catch (error) {
-    res.status(500).send({ success: false, error: "Internal Server Error" });
-  }
-});
-
-app.patch("/merchant-update/:email", async (req, res) => {
-  try {
-    const { merchantsCollections } = await connectDB();
-    const updatedMerchantInfo = req.body;
-
-    const result = await merchantsCollections.updateOne(
-      { email: req.params.email },
-      { $set: updatedMerchantInfo },
-    );
-    if (result.modifiedCount > 0) {
       res.send({
         success: true,
-        message: "Merchant profile edited done",
+        role: merchant.role,
+        email: merchant.email,
+        ...merchant,
       });
-    } else {
-      res.status(404).send({ success: false, message: "Merchant not found" });
+    } catch (error) {
+      res.status(500).send({ success: false, error: "Internal Server Error" });
     }
-  } catch (error) {
-    res.status(500).send({ success: false, error: "Internal Server Error" });
-  }
-});
+  },
+);
+
+app.patch(
+  "/merchant-update/:email",
+  verifyFireBaseToken,
+  verifyMerchantToken,
+  verifyOwner,
+  async (req, res) => {
+    try {
+      const { merchantsCollections } = await connectDB();
+      const updatedMerchantInfo = req.body;
+
+      const result = await merchantsCollections.updateOne(
+        { email: req.params.email },
+        { $set: updatedMerchantInfo },
+      );
+      if (result.modifiedCount > 0) {
+        res.send({
+          success: true,
+          message: "Merchant profile edited done",
+        });
+      } else {
+        res.status(404).send({ success: false, message: "Merchant not found" });
+      }
+    } catch (error) {
+      res.status(500).send({ success: false, error: "Internal Server Error" });
+    }
+  },
+);
 
 /* ---- Payment Payout ---- */
 app.get("/payment-payout-summary/:email", async (req, res) => {
@@ -1799,31 +1835,43 @@ app.get("/tracking/:id", async (req, res) => {
   }
 });
 
-app.post("/parcels", verifyFireBaseToken, verifyMerchantToken, verifyOwner, async (req, res) => {
-  try {
-    const { parcelsCollections } = await connectDB();
-    const newParcel = req.body;
+app.post(
+  "/parcels",
+  verifyFireBaseToken,
+  verifyMerchantToken,
+  verifyOwner,
+  async (req, res) => {
+    try {
+      const { parcelsCollections } = await connectDB();
+      const newParcel = req.body;
 
-    await logTracking(newParcel, "parcel-created");
+      await logTracking(newParcel, "parcel-created");
 
-    const result = await parcelsCollections.insertOne(newParcel);
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: "Internal Server Error" });
-  }
-});
+      const result = await parcelsCollections.insertOne(newParcel);
+      res.send(result);
+    } catch (error) {
+      res.status(500).send({ message: "Internal Server Error" });
+    }
+  },
+);
 
-app.delete("/parcel/:id", verifyFireBaseToken, verifyMerchantToken, verifyOwner, async (req, res) => {
-  try {
-    const { parcelsCollections } = await connectDB();
-    const result = await parcelsCollections.deleteOne({
-      _id: new ObjectId(req.params.id),
-    });
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: "Internal Server Error" });
-  }
-});
+app.delete(
+  "/parcel/:id",
+  verifyFireBaseToken,
+  verifyMerchantToken,
+  verifyOwner,
+  async (req, res) => {
+    try {
+      const { parcelsCollections } = await connectDB();
+      const result = await parcelsCollections.deleteOne({
+        _id: new ObjectId(req.params.id),
+      });
+      res.send(result);
+    } catch (error) {
+      res.status(500).send({ message: "Internal Server Error" });
+    }
+  },
+);
 
 app.patch("/parcels/dispatch/:id", async (req, res) => {
   try {
@@ -1919,175 +1967,201 @@ app.patch("/parcels/origin-hub/received/:id", async (req, res) => {
   }
 });
 
-app.get("/hub-hand-cash/:hubName", async (req, res) => {
-  try {
-    const { hubName } = req.params;
-    const { parcelsCollections } = await connectDB();
+app.get(
+  "/hub-hand-cash/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { hubName } = req.params;
+      const { parcelsCollections } = await connectDB();
 
-    const parcels = await parcelsCollections
-      .find({
-        "serviceCenters.destination": hubName,
-        deliveryStatus: "delivered",
-        isDepositedToHQ: false,
-      })
-      .toArray();
-
-    let totalHandCash = 0;
-    const totalParcelCount = parcels.length;
-
-    parcels.forEach((parcel) => {
-      const isPayoutPending = [false, "pending"].includes(
-        parcel.merchantRevenueStatus,
-      );
-
-      if (isPayoutPending) {
-        totalHandCash += parcel.codAmount || 0;
-      } else if (!parcel.deliveryChargeOnlinePaymentStatus) {
-        totalHandCash += parcel.deliveryCharge || 0;
-      }
-    });
-
-    res.send({
-      success: true,
-      parcels,
-      hubName,
-      totalParcelCount,
-      totalHandCash,
-    });
-  } catch (error) {
-    res.status(500).send({
-      success: false,
-      message: "Internal Server Error",
-      error: error.message,
-    });
-  }
-});
-
-app.get("/hub-profit-metrics/:hubName", async (req, res) => {
-  try {
-    const { hubName } = req.params;
-    const { parcelsCollections } = await connectDB();
-
-    const parcels = await parcelsCollections
-      .find({
-        "serviceCenters.destination": hubName,
-        deliveryStatus: "delivered",
-        isDepositedToHQ: false,
-      })
-      .toArray();
-
-    let hqPayableProfit = 0;
-    let payableParcelCount = 0;
-
-    parcels.forEach((parcel) => {
-      if (!parcel.deliveryChargeOnlinePaymentStatus) {
-        hqPayableProfit += parcel.deliveryCharge || 0;
-        payableParcelCount += 1;
-      }
-    });
-
-    res.send({
-      success: true,
-      hubName,
-      totalParcelCount: payableParcelCount,
-      hqPayableProfit,
-    });
-  } catch (error) {
-    console.error("Hub Profit Metrics Error:", error);
-    res.status(500).send({ success: false, message: "Internal Server Error" });
-  }
-});
-
-app.get("/hub-aging-status/:hubName", async (req, res) => {
-  try {
-    const { parcelsCollections } = await connectDB();
-    const { hubName } = req.params;
-    const activeParcels = await parcelsCollections
-      .find({
-        $or: [
-          { "serviceCenters.origin": hubName },
-          { "serviceCenters.destination": hubName },
-        ],
-
-        deliveryStatus: {
-          $in: ["reached-origin-warehouse", "reached-destination-warehouse"],
-        },
-      })
-      .toArray();
-
-    let age24H = 0;
-    let age48H = 0;
-    let age72HPlus = 0;
-
-    const now = new Date();
-
-    activeParcels.forEach((parcel) => {
-      if (parcel.createdAt) {
-        const createdTime = new Date(parcel.createdAt);
-        const diffInHours = (now - createdTime) / (1000 * 60 * 60);
-
-        if (diffInHours <= 24) {
-          age24H++;
-        } else if (diffInHours > 24 && diffInHours <= 48) {
-          age48H++;
-        } else {
-          age72HPlus++;
-        }
-      }
-    });
-
-    res.send({ age24H, age48H, age72HPlus });
-  } catch (error) {
-    res.status(500).send({ success: false, message: "Internal Server Error" });
-  }
-});
-
-app.get("/hub-efficiency-flow/:hubName", async (req, res) => {
-  try {
-    const { parcelsCollections } = await connectDB();
-    const { hubName } = req.params;
-
-    const now = new Date();
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const sevenDayAgoStr = sevenDaysAgo.toISOString();
-
-    const sortingCount = await parcelsCollections.countDocuments({
-      createdAt: { $gte: sevenDayAgoStr },
-      $or: [
-        {
-          "serviceCenters.origin": hubName,
-          deliveryStatus: "reached-origin-warehouse",
-        },
-        {
+      const parcels = await parcelsCollections
+        .find({
           "serviceCenters.destination": hubName,
-          deliveryStatus: "reached-destination-warehouse",
-        },
-      ],
-    });
+          deliveryStatus: "delivered",
+          isDepositedToHQ: false,
+        })
+        .toArray();
 
-    const OutForDeliveryCount = await parcelsCollections.countDocuments({
-      "serviceCenters.destination": hubName,
-      createdAt: { $gte: sevenDayAgoStr },
-      deliveryStatus: "assign-delivery-rider",
-    });
+      let totalHandCash = 0;
+      const totalParcelCount = parcels.length;
 
-    const deliveredCount = await parcelsCollections.countDocuments({
-      "serviceCenters.destination": hubName,
-      createdAt: { $gte: sevenDayAgoStr },
-      deliveryStatus: "delivered",
-    });
+      parcels.forEach((parcel) => {
+        const isPayoutPending = [false, "pending"].includes(
+          parcel.merchantRevenueStatus,
+        );
 
-    const total = sortingCount + OutForDeliveryCount + deliveredCount;
+        if (isPayoutPending) {
+          totalHandCash += parcel.codAmount || 0;
+        } else if (!parcel.deliveryChargeOnlinePaymentStatus) {
+          totalHandCash += parcel.deliveryCharge || 0;
+        }
+      });
 
-    const sorting = Math.round((sortingCount / total) * 100) || 0;
-    const outDelivery = Math.round((OutForDeliveryCount / total) * 100) || 0;
-    const delivered = Math.round((deliveredCount / total) * 100) || 0;
+      res.send({
+        success: true,
+        parcels,
+        hubName,
+        totalParcelCount,
+        totalHandCash,
+      });
+    } catch (error) {
+      res.status(500).send({
+        success: false,
+        message: "Internal Server Error",
+        error: error.message,
+      });
+    }
+  },
+);
 
-    res.send({ sorting, outDelivery, delivered, totalActive: total });
-  } catch (error) {
-    res.status(500).send({ success: false, message: "Internal Server Error" });
-  }
-});
+app.get(
+  "/hub-profit-metrics/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { hubName } = req.params;
+      const { parcelsCollections } = await connectDB();
+
+      const parcels = await parcelsCollections
+        .find({
+          "serviceCenters.destination": hubName,
+          deliveryStatus: "delivered",
+          isDepositedToHQ: false,
+        })
+        .toArray();
+
+      let hqPayableProfit = 0;
+      let payableParcelCount = 0;
+
+      parcels.forEach((parcel) => {
+        if (!parcel.deliveryChargeOnlinePaymentStatus) {
+          hqPayableProfit += parcel.deliveryCharge || 0;
+          payableParcelCount += 1;
+        }
+      });
+
+      res.send({
+        success: true,
+        hubName,
+        totalParcelCount: payableParcelCount,
+        hqPayableProfit,
+      });
+    } catch (error) {
+      console.error("Hub Profit Metrics Error:", error);
+      res
+        .status(500)
+        .send({ success: false, message: "Internal Server Error" });
+    }
+  },
+);
+
+app.get(
+  "/hub-aging-status/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { parcelsCollections } = await connectDB();
+      const { hubName } = req.params;
+      const activeParcels = await parcelsCollections
+        .find({
+          $or: [
+            { "serviceCenters.origin": hubName },
+            { "serviceCenters.destination": hubName },
+          ],
+
+          deliveryStatus: {
+            $in: ["reached-origin-warehouse", "reached-destination-warehouse"],
+          },
+        })
+        .toArray();
+
+      let age24H = 0;
+      let age48H = 0;
+      let age72HPlus = 0;
+
+      const now = new Date();
+
+      activeParcels.forEach((parcel) => {
+        if (parcel.createdAt) {
+          const createdTime = new Date(parcel.createdAt);
+          const diffInHours = (now - createdTime) / (1000 * 60 * 60);
+
+          if (diffInHours <= 24) {
+            age24H++;
+          } else if (diffInHours > 24 && diffInHours <= 48) {
+            age48H++;
+          } else {
+            age72HPlus++;
+          }
+        }
+      });
+
+      res.send({ age24H, age48H, age72HPlus });
+    } catch (error) {
+      res
+        .status(500)
+        .send({ success: false, message: "Internal Server Error" });
+    }
+  },
+);
+
+app.get(
+  "/hub-efficiency-flow/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { parcelsCollections } = await connectDB();
+      const { hubName } = req.params;
+
+      const now = new Date();
+      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const sevenDayAgoStr = sevenDaysAgo.toISOString();
+
+      const sortingCount = await parcelsCollections.countDocuments({
+        createdAt: { $gte: sevenDayAgoStr },
+        $or: [
+          {
+            "serviceCenters.origin": hubName,
+            deliveryStatus: "reached-origin-warehouse",
+          },
+          {
+            "serviceCenters.destination": hubName,
+            deliveryStatus: "reached-destination-warehouse",
+          },
+        ],
+      });
+
+      const OutForDeliveryCount = await parcelsCollections.countDocuments({
+        "serviceCenters.destination": hubName,
+        createdAt: { $gte: sevenDayAgoStr },
+        deliveryStatus: "assign-delivery-rider",
+      });
+
+      const deliveredCount = await parcelsCollections.countDocuments({
+        "serviceCenters.destination": hubName,
+        createdAt: { $gte: sevenDayAgoStr },
+        deliveryStatus: "delivered",
+      });
+
+      const total = sortingCount + OutForDeliveryCount + deliveredCount;
+
+      const sorting = Math.round((sortingCount / total) * 100) || 0;
+      const outDelivery = Math.round((OutForDeliveryCount / total) * 100) || 0;
+      const delivered = Math.round((deliveredCount / total) * 100) || 0;
+
+      res.send({ sorting, outDelivery, delivered, totalActive: total });
+    } catch (error) {
+      res
+        .status(500)
+        .send({ success: false, message: "Internal Server Error" });
+    }
+  },
+);
 
 app.post("/deposit-HQ/:hubName", async (req, res) => {
   try {
