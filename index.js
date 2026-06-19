@@ -1799,7 +1799,7 @@ app.get("/tracking/:id", async (req, res) => {
   }
 });
 
-app.post("/parcels", async (req, res) => {
+app.post("/parcels", verifyFireBaseToken, verifyMerchantToken, verifyOwner, async (req, res) => {
   try {
     const { parcelsCollections } = await connectDB();
     const newParcel = req.body;
