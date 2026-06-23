@@ -1819,21 +1819,21 @@ app.get(
   },
 );
 
-app.get("/merchant-parcels/:email", async (req, res) => {
-  try {
-    const { parcelsCollections } = await connectDB();
-    const email = req.params.email;
+// app.get("/merchant-parcels/:email", async (req, res) => {
+//   try {
+//     const { parcelsCollections } = await connectDB();
+//     const email = req.params.email;
 
-    const result = await parcelsCollections
-      .find({ "senderInfo.email": email })
-      .sort({ createdAt: -1 })
-      .toArray();
+//     const result = await parcelsCollections
+//       .find({ "senderInfo.email": email })
+//       .sort({ createdAt: -1 })
+//       .toArray();
 
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: "Error loading reports" });
-  }
-});
+//     res.send(result);
+//   } catch (error) {
+//     res.status(500).send({ message: "Error loading reports" });
+//   }
+// });
 
 app.get("/tracking/:id", async (req, res) => {
   try {
