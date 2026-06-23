@@ -1008,7 +1008,7 @@ app.patch(
   },
 );
 
-app.patch("/parcels/assign-delivery", async (req, res) => {
+app.patch("/parcels/assign-delivery", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
   try {
     const { parcelId, riderId, riderName, riderEmail, riderPhone, trackingID } =
       req.body;
@@ -1218,7 +1218,7 @@ app.get(
   },
 );
 
-app.get("/area-merchant/:hubName", async (req, res) => {
+app.get("/area-merchant/:hubName", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
   try {
     const { merchantsCollections } = await connectDB();
     const { hubName } = req.params;
@@ -1889,7 +1889,7 @@ app.delete(
   },
 );
 
-app.patch("/parcels/dispatch/:id", verifyFireBaseToken, verifyMerchantToken, async (req, res) => {
+app.patch("/parcels/dispatch/:id", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { parcelsCollections } = await connectDB();
