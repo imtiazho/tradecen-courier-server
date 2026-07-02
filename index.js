@@ -1325,7 +1325,6 @@ app.patch("/parcels/return-origin-hub/received/:parcelId", async (req, res) => {
   try {
     const { parcelsCollections } = await connectDB();
     const { parcelId } = req.params;
-    // updateOne কেটে findOneAndUpdate করা হলো যাতে আপডেটেড ডকুমেন্টটি ভেরিয়েবলে আসে
     const updatedParcel = await parcelsCollections.findOneAndUpdate(
       { _id: new ObjectId(parcelId) },
       {
@@ -1335,10 +1334,9 @@ app.patch("/parcels/return-origin-hub/received/:parcelId", async (req, res) => {
           receiveFromOriHubAt: new Date(),
         },
       },
-      { returnDocument: "after" }, // এটি findOneAndUpdate এর সাথে নিখুঁত কাজ করবে
+      { returnDocument: "after" },
     );
 
-    // সেফটি চেক: যদি কোনো কারণে পার্সেলটি ডাটাবেজে না পাওয়া যায়
     if (!updatedParcel) {
       return res.status(404).send({
         success: false,
@@ -1346,13 +1344,28 @@ app.patch("/parcels/return-origin-hub/received/:parcelId", async (req, res) => {
       });
     }
 
-    // এখন updatedParcel এর ভেতর সম্পূর্ণ অবজেক্টটি আছে, তাই লগ ট্র্যাকিং স্মুথলি কাজ করবে
     await logTracking(updatedParcel, "receive-from-origin-warehouse");
 
     res.send({
       success: true,
       message: "Parcel successfully received from origin warehouse!",
     });
+  } catch (error) {
+    res.status(500).send({ success: false, message: "Internal server error" });
+  }
+});
+
+app.get("/warehouse/return-house/:hubName", async (req, res) => {
+  try {
+    const { parcelsCollections } = await connectDB();
+    const parcels = await parcelsCollections
+      .find({
+        "serviceCenters.origin": req.params.hubName,
+        deliveryStatus: "receive-from-origin-warehouse",
+      })
+      .toArray();
+
+    res.send({ success: true, returnList: parcels });
   } catch (error) {
     res.status(500).send({ success: false, message: "Internal server error" });
   }
