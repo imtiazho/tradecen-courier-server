@@ -1137,64 +1137,181 @@ app.patch(
 app.patch("/riders/return-req/update", async (req, res) => {
   try {
     const { riderId, parcelId } = req.body;
-    const { parcelsCollections, ridersCollections } = await connectDB();
+    const { parcelsCollections, ridersCollections, hubManagersCollection } =
+      await connectDB();
 
-    // ১. মেইন পার্সেল কালেকশনে রিটার্ন রিকোয়েস্ট সিগন্যাল আপডেট করা
     await parcelsCollections.updateOne(
       { _id: new ObjectId(parcelId) },
       {
         $set: {
           deliveryStatus: "return-requested",
-          currentLocation: "on-the-way-to-destination-hub",
+          currentLocation: "way-back-destination-hub",
           returnReqAt: new Date(),
           isReturnRequested: true,
         },
-      }
+      },
     );
 
-    // ২. পার্সেলের কারেন্ট ইনফো তুলে ট্র্যাকিং লগ তৈরি করা
     const parcel = await parcelsCollections.findOne({
       _id: new ObjectId(parcelId),
     });
+
+    const hubName = parcel?.receiverInfo?.area;
+
     await logTracking(parcel, "return-requested");
 
-    // ৩. রাইডারের কালেকশন আপডেট (১ম ধাপ): activeTasks থেকে $pull এবং returnLedger-এ $push
-    // (এখানে arrayFilters আর লাগছে না, কারণ আমরা সরাসরি অবজেক্ট ম্যাচ করে pull করছি)
     await ridersCollections.updateOne(
       { _id: new ObjectId(riderId) },
       {
-        // activeTasks থেকে এই পার্সেলটি পুরোপুরি রিমুভ করে দেওয়া হলো
-        $pull: { 
-          activeTasks: { parcelId: new ObjectId(parcelId) } 
+        $inc: { currentTasks: -1 },
+        $pull: {
+          activeTasks: { parcelId: new ObjectId(parcelId) },
         },
-        // নতুন returnLedger অ্যারেতে পার্সেলের প্রয়োজনীয় ইনফো পুশ করা হলো
         $push: {
-          returnLedger: {
-            parcelId: new ObjectId(parcelId),
-            trackingID: parcel?.trackingID,
-            parcelName: parcel?.parcelName || "Standard Shipment",
-            merchantName: parcel?.senderInfo?.name,
-            merchantPhone: parcel?.senderInfo?.phone,
-            pickupLocation: parcel?.senderInfo?.address,
-            codAmount: parcel?.codAmount || 0,
-            requestedAt: new Date(),
-            status: "pending-hub-receive" // হাব ম্যানেজার রিসিভ করার আগ পর্যন্ত এই স্ট্যাটাস থাকবে
-          }
-        }
-      }
+          returnLedger: { ...parcel, requestedAt: new Date() },
+        },
+      },
     );
 
-    // ৪. নোট (ঐচ্ছিক): আপনি চাইলে রাইডারের টাস্ক কাউন্টারও এখানে হ্যান্ডেল করতে পারেন
-    // তবে সিকিউরিটির জন্য 'currentTasks' কাউন্টটি হাব ম্যানেজার রিসিভ করার পর কমানো বেস্ট।
-    // যদি এখনই কমাতে চান, তবে উপরের updateOne-এর ভেতর `$inc: { currentTasks: -1 }` লিখে দিতে পারেন।
+    await hubManagersCollection.updateOne(
+      { hubName: hubName },
+      {
+        $push: {
+          returnReq: {
+            ...parcel,
+            requestedAt: new Date(),
+            isHubReceived: false,
+          },
+        },
+      },
+    );
 
     res.send({
       success: true,
-      message: "Return request processed. Parcel moved from Active Tasks to Return Ledger.",
+      message:
+        "Return request processed. Parcel moved from Active Tasks to Return Ledger.",
     });
-
   } catch (error) {
     console.error("Return Request Error:", error);
+    res.status(500).send({ success: false, message: "Internal server error" });
+  }
+});
+
+app.patch("/parcels/return-hub/received/:parcelId", async (req, res) => {
+  try {
+    const { parcelId } = req.params;
+    const { managerEmail } = req.body;
+
+    const { hubManagersCollection, parcelsCollections, ridersCollections } =
+      await connectDB();
+
+    const managerUpdate = await hubManagersCollection.updateOne(
+      {
+        email: managerEmail,
+        $or: [{ "returnReq._id": new ObjectId(parcelId) }],
+      },
+      {
+        $set: { "returnReq.$.isHubReceived": true },
+      },
+    );
+
+    if (managerUpdate.matchedCount === 0) {
+      return res.status(404).send({
+        success: false,
+        message: "Parcel not found in Hub Manager's return request ledger.",
+      });
+    }
+
+    const parcelUpdate = await parcelsCollections.findOneAndUpdate(
+      { _id: new ObjectId(parcelId) },
+      {
+        $set: {
+          deliveryStatus: "returned-to-hub",
+          currentLocation: "destination-hub",
+          hubReceivedAt: new Date(),
+        },
+      },
+      { returnDocument: "after" },
+    );
+
+    if (!parcelUpdate) {
+      return res.status(404).send({
+        success: false,
+        message: "Parcel not found in main parcel collection.",
+      });
+    }
+
+    const riderEmail = parcelUpdate.deliveryRider?.email;
+
+    if (riderEmail) {
+      await ridersCollections.updateOne(
+        { email: riderEmail },
+        {
+          $pull: {
+            returnReq: {
+              $or: [{ _id: new ObjectId(parcelId) }],
+            },
+          },
+        },
+      );
+    }
+
+    const parcel = await parcelsCollections.findOne({
+      _id: new ObjectId(parcelId),
+    });
+    await logTracking(parcel, "returned-to-hub");
+
+    res.send({
+      success: true,
+      message:
+        "Return successfully received at hub and cleared from rider task.",
+      data: parcelUpdate,
+    });
+  } catch (error) {
+    console.error("Return reception error:", error);
+    res.status(500).send({ success: false, error: "Internal Server Error" });
+  }
+});
+
+app.patch("/hub/dispatch-return-to-origin/:parcelId", async (req, res) => {
+  try {
+    const { parcelId } = req.params;
+    const managerEmail = req.body.managerEmail;
+    const { parcelsCollections, hubManagersCollection } = await connectDB();
+
+    const updatedParcel = await parcelsCollections.findOneAndUpdate(
+      { _id: new ObjectId(parcelId) },
+      {
+        $set: {
+          deliveryStatus: "return-in-transit-to-origin",
+          currentLocation: "on-the-way-to-origin-warehouse",
+          dispatchedFromHubAt: new Date(),
+        },
+      },
+      { returnDocument: "after" },
+    );
+
+    if (!updatedParcel) {
+      return res.status(404).send({
+        success: false,
+        message: "Parcel not found in warehouse registry.",
+      });
+    }
+
+    await logTracking(updatedParcel, "dispatched-back-to-origin-warehouse");
+
+    await hubManagersCollection.updateOne(
+      { email: managerEmail },
+      {
+        $pull: { returnReq: { _id: new ObjectId(parcelId) } },
+      },
+    );
+
+    res.send({
+      success: true,
+      message: "Parcel successfully dispatched to the origin warehouse!",
+    });
+  } catch (error) {
     res.status(500).send({ success: false, message: "Internal server error" });
   }
 });
