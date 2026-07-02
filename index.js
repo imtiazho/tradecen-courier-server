@@ -459,24 +459,29 @@ app.get(
   },
 );
 
-app.get("/parcels/pickups/:hubName", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
-  try {
-    const { parcelsCollections } = await connectDB();
-    const hubName = req.params.hubName;
-    const query = {
-      "serviceCenters.origin": hubName,
-      deliveryStatus: "picked-up",
-    };
+app.get(
+  "/parcels/pickups/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { parcelsCollections } = await connectDB();
+      const hubName = req.params.hubName;
+      const query = {
+        "serviceCenters.origin": hubName,
+        deliveryStatus: "picked-up",
+      };
 
-    const result = await parcelsCollections.find(query).toArray();
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({
-      message: "Error fetching incoming parcels",
-      error: error.message,
-    });
-  }
-});
+      const result = await parcelsCollections.find(query).toArray();
+      res.send(result);
+    } catch (error) {
+      res.status(500).send({
+        message: "Error fetching incoming parcels",
+        error: error.message,
+      });
+    }
+  },
+);
 
 app.get(
   "/warehouse/sorting-house/:hubName",
@@ -491,13 +496,22 @@ app.get(
         .find({
           deliveryStatus: "reached-origin-warehouse",
           "senderInfo.area": hubName,
+          inCity: false,
         })
         .toArray();
 
       const deliveryList = await parcelsCollections
         .find({
-          deliveryStatus: "reached-destination-warehouse",
-          "receiverInfo.area": hubName,
+          $or: [
+            {
+              deliveryStatus: "reached-destination-warehouse",
+              "receiverInfo.area": hubName,
+            },
+            {
+              deliveryStatus: "reached-origin-warehouse",
+              "receiverInfo.area": hubName,
+            },
+          ],
         })
         .toArray();
 
@@ -1008,63 +1022,74 @@ app.patch(
   },
 );
 
-app.patch("/parcels/assign-delivery", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
-  try {
-    const { parcelId, riderId, riderName, riderEmail, riderPhone, trackingID } =
-      req.body;
-    const { parcelsCollections, ridersCollections } = await connectDB();
-    const parcelData = await parcelsCollections.findOne({
-      _id: new ObjectId(parcelId),
-    });
+app.patch(
+  "/parcels/assign-delivery",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const {
+        parcelId,
+        riderId,
+        riderName,
+        riderEmail,
+        riderPhone,
+        trackingID,
+      } = req.body;
+      const { parcelsCollections, ridersCollections } = await connectDB();
+      const parcelData = await parcelsCollections.findOne({
+        _id: new ObjectId(parcelId),
+      });
 
-    const parcelUpdate = await parcelsCollections.updateOne(
-      { _id: new ObjectId(parcelId) },
-      {
-        $set: {
-          deliveryStatus: "assign-delivery-rider",
-          deliveryRider: {
-            id: riderId,
-            name: riderName,
-            email: riderEmail,
-            phone: riderPhone,
-            assignedAt: new Date(),
+      const parcelUpdate = await parcelsCollections.updateOne(
+        { _id: new ObjectId(parcelId) },
+        {
+          $set: {
+            deliveryStatus: "assign-delivery-rider",
+            deliveryRider: {
+              id: riderId,
+              name: riderName,
+              email: riderEmail,
+              phone: riderPhone,
+              assignedAt: new Date(),
+            },
           },
         },
-      },
-    );
-    await logTracking(parcelData, "assign-delivery-rider");
-    const riderUpdate = await ridersCollections.updateOne(
-      { _id: new ObjectId(riderId) },
-      {
-        $inc: { currentTasks: 1, totalAssign: 1 },
-        $push: {
-          activeTasks: {
-            parcelId: new ObjectId(parcelId),
-            trackingID: trackingID,
-            parcelName: parcelData.parcelName,
-            codAmount: parcelData.codAmount,
-            deliveryLocation: parcelData.receiverInfo.address,
-            consumerName: parcelData.receiverInfo.name,
-            consumerPhone: parcelData.receiverInfo.phone,
-            taskType: "delivery",
-            assignedAt: new Date(),
-            isHold: false,
+      );
+      await logTracking(parcelData, "assign-delivery-rider");
+      const riderUpdate = await ridersCollections.updateOne(
+        { _id: new ObjectId(riderId) },
+        {
+          $inc: { currentTasks: 1, totalAssign: 1 },
+          $push: {
+            activeTasks: {
+              parcelId: new ObjectId(parcelId),
+              trackingID: trackingID,
+              parcelName: parcelData.parcelName,
+              codAmount: parcelData.codAmount,
+              deliveryLocation: parcelData.receiverInfo.address,
+              consumerName: parcelData.receiverInfo.name,
+              consumerPhone: parcelData.receiverInfo.phone,
+              taskType: "delivery",
+              assignedAt: new Date(),
+              isHold: false,
+            },
           },
         },
-      },
-    );
+      );
 
-    if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
-      res
-        .status(200)
-        .send({ success: true, message: "Rider assigned successfully" });
-    } else {
-      res.status(400).send({ message: "Assignment failed" });
+      if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
+        res
+          .status(200)
+          .send({ success: true, message: "Rider assigned successfully" });
+      } else {
+        res.status(400).send({ message: "Assignment failed" });
+      }
+    } catch (error) {
+      res.status(500).send({ message: "Server error", error: error.message });
     }
-  } catch (error) {
-    res.status(500).send({ message: "Server error", error: error.message });
-  }
-});
+  },
+);
 
 app.patch(
   "/riders/complete-pickup/update",
@@ -1218,20 +1243,25 @@ app.get(
   },
 );
 
-app.get("/area-merchant/:hubName", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
-  try {
-    const { merchantsCollections } = await connectDB();
-    const { hubName } = req.params;
-    const result = await merchantsCollections
-      .find({
-        area: hubName,
-      })
-      .toArray();
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ success: false, error: "Internal Server Error" });
-  }
-});
+app.get(
+  "/area-merchant/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { merchantsCollections } = await connectDB();
+      const { hubName } = req.params;
+      const result = await merchantsCollections
+        .find({
+          area: hubName,
+        })
+        .toArray();
+      res.send(result);
+    } catch (error) {
+      res.status(500).send({ success: false, error: "Internal Server Error" });
+    }
+  },
+);
 
 app.post("/merchants", async (req, res) => {
   try {
@@ -1889,99 +1919,120 @@ app.delete(
   },
 );
 
-app.patch("/parcels/dispatch/:id", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { parcelsCollections } = await connectDB();
+app.patch(
+  "/parcels/dispatch/:id",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { parcelsCollections } = await connectDB();
 
-    const result = await parcelsCollections.updateOne(
-      { _id: new ObjectId(id) },
-      {
-        $set: {
-          deliveryStatus: "in-transit",
-          currentLocation: "Transport",
-          updatedAt: new Date(),
+      const result = await parcelsCollections.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            deliveryStatus: "in-transit",
+            currentLocation: "Transport",
+            updatedAt: new Date(),
+          },
         },
-      },
-    );
+      );
 
-    const parcel = await parcelsCollections.findOne({ _id: new ObjectId(id) });
-    await logTracking(parcel, "in-transit");
-
-    if (result.modifiedCount > 0) {
-      res.send({
-        success: true,
-        message: "Parcel status updated to in-transit",
+      const parcel = await parcelsCollections.findOne({
+        _id: new ObjectId(id),
       });
-    } else {
-      res.status(404).send({ success: false, message: "Parcel not found" });
+      await logTracking(parcel, "in-transit");
+
+      if (result.modifiedCount > 0) {
+        res.send({
+          success: true,
+          message: "Parcel status updated to in-transit",
+        });
+      } else {
+        res.status(404).send({ success: false, message: "Parcel not found" });
+      }
+    } catch (error) {
+      res.status(500).send({ message: "Server Error", error: error.message });
     }
-  } catch (error) {
-    res.status(500).send({ message: "Server Error", error: error.message });
-  }
-});
+  },
+);
 
-app.patch("/parcels/dest-hub/received/:id", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { parcelsCollections } = await connectDB();
+app.patch(
+  "/parcels/dest-hub/received/:id",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { parcelsCollections } = await connectDB();
 
-    const result = await parcelsCollections.updateOne(
-      { _id: new ObjectId(id) },
-      {
-        $set: {
-          deliveryStatus: "reached-destination-warehouse",
-          currentLocation: "destination-warehouse",
-          updatedAt: new Date(),
+      const result = await parcelsCollections.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            deliveryStatus: "reached-destination-warehouse",
+            currentLocation: "destination-warehouse",
+            updatedAt: new Date(),
+          },
         },
-      },
-    );
+      );
 
-    const parcel = await parcelsCollections.findOne({ _id: new ObjectId(id) });
-    await logTracking(parcel, "reached-destination-warehouse");
-    if (result.modifiedCount > 0) {
-      res.send({
-        success: true,
-        message: "Parcel status updated to in-transit",
+      const parcel = await parcelsCollections.findOne({
+        _id: new ObjectId(id),
       });
-    } else {
-      res.status(404).send({ success: false, message: "Parcel not found" });
+      await logTracking(parcel, "reached-destination-warehouse");
+      if (result.modifiedCount > 0) {
+        res.send({
+          success: true,
+          message: "Parcel status updated to in-transit",
+        });
+      } else {
+        res.status(404).send({ success: false, message: "Parcel not found" });
+      }
+    } catch (error) {
+      res.status(500).send({ message: "Server Error", error: error.message });
     }
-  } catch (error) {
-    res.status(500).send({ message: "Server Error", error: error.message });
-  }
-});
+  },
+);
 
-app.patch("/parcels/origin-hub/received/:id", verifyFireBaseToken, verifyHubManagerToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { parcelsCollections } = await connectDB();
+app.patch(
+  "/parcels/origin-hub/received/:id",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { parcelsCollections } = await connectDB();
 
-    const result = await parcelsCollections.updateOne(
-      { _id: new ObjectId(id) },
-      {
-        $set: {
-          deliveryStatus: "reached-origin-warehouse",
-          currentLocation: "origin-warehouse",
-          updatedAt: new Date(),
+      const result = await parcelsCollections.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            deliveryStatus: "reached-origin-warehouse",
+            currentLocation: "origin-warehouse",
+            updatedAt: new Date(),
+          },
         },
-      },
-    );
+      );
 
-    const parcel = await parcelsCollections.findOne({ _id: new ObjectId(id) });
-    await logTracking(parcel, "reached-origin-warehouse");
-    if (result.modifiedCount > 0) {
-      res.send({
-        success: true,
-        message: "Parcel status updated to in-transit",
+      const parcel = await parcelsCollections.findOne({
+        _id: new ObjectId(id),
       });
-    } else {
-      res.status(404).send({ success: false, message: "Parcel not found" });
+      await logTracking(parcel, "reached-origin-warehouse");
+      if (result.modifiedCount > 0) {
+        res.send({
+          success: true,
+          message: "Parcel status updated to in-transit",
+        });
+      } else {
+        res.status(404).send({ success: false, message: "Parcel not found" });
+      }
+    } catch (error) {
+      res.status(500).send({ message: "Server Error", error: error.message });
     }
-  } catch (error) {
-    res.status(500).send({ message: "Server Error", error: error.message });
-  }
-});
+  },
+);
 
 app.get(
   "/hub-hand-cash/:hubName",
