@@ -445,6 +445,11 @@ app.get(
             "serviceCenters.destination": hubName,
             deliveryStatus: "in-transit",
           },
+
+          {
+            "serviceCenters.origin": hubName,
+            deliveryStatus: "return-in-transit-to-origin",
+          },
         ],
       };
 
@@ -1310,6 +1315,43 @@ app.patch("/hub/dispatch-return-to-origin/:parcelId", async (req, res) => {
     res.send({
       success: true,
       message: "Parcel successfully dispatched to the origin warehouse!",
+    });
+  } catch (error) {
+    res.status(500).send({ success: false, message: "Internal server error" });
+  }
+});
+
+app.patch("/parcels/return-origin-hub/received/:parcelId", async (req, res) => {
+  try {
+    const { parcelsCollections } = await connectDB();
+    const { parcelId } = req.params;
+    // updateOne কেটে findOneAndUpdate করা হলো যাতে আপডেটেড ডকুমেন্টটি ভেরিয়েবলে আসে
+    const updatedParcel = await parcelsCollections.findOneAndUpdate(
+      { _id: new ObjectId(parcelId) },
+      {
+        $set: {
+          deliveryStatus: "receive-from-origin-warehouse",
+          currentLocation: "receive-from-origin-warehouse",
+          receiveFromOriHubAt: new Date(),
+        },
+      },
+      { returnDocument: "after" }, // এটি findOneAndUpdate এর সাথে নিখুঁত কাজ করবে
+    );
+
+    // সেফটি চেক: যদি কোনো কারণে পার্সেলটি ডাটাবেজে না পাওয়া যায়
+    if (!updatedParcel) {
+      return res.status(404).send({
+        success: false,
+        message: "Parcel not found in registry.",
+      });
+    }
+
+    // এখন updatedParcel এর ভেতর সম্পূর্ণ অবজেক্টটি আছে, তাই লগ ট্র্যাকিং স্মুথলি কাজ করবে
+    await logTracking(updatedParcel, "receive-from-origin-warehouse");
+
+    res.send({
+      success: true,
+      message: "Parcel successfully received from origin warehouse!",
     });
   } catch (error) {
     res.status(500).send({ success: false, message: "Internal server error" });
