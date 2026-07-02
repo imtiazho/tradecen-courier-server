@@ -1098,6 +1098,72 @@ app.patch(
 );
 
 app.patch(
+  "/parcels/assign-return-delivery",
+  async (req, res) => {
+    try {
+      const {
+        parcelId,
+        riderId,
+        riderName,
+        riderEmail,
+        riderPhone,
+        trackingID,
+      } = req.body;
+      const { parcelsCollections, ridersCollections } = await connectDB();
+      const parcelData = await parcelsCollections.findOne({
+        _id: new ObjectId(parcelId),
+      });
+
+      const parcelUpdate = await parcelsCollections.updateOne(
+        { _id: new ObjectId(parcelId) },
+        {
+          $set: {
+            deliveryStatus: "assign-return-rider",
+            returnRider: {
+              id: riderId,
+              name: riderName,
+              email: riderEmail,
+              phone: riderPhone,
+              assignedAt: new Date(),
+            },
+          },
+        },
+      );
+      await logTracking(parcelData, "assign-return-rider");
+      const riderUpdate = await ridersCollections.updateOne(
+        { _id: new ObjectId(riderId) },
+        {
+          $inc: { currentTasks: 1, totalAssign: 1 },
+          $push: {
+            activeTasks: {
+              parcelId: new ObjectId(parcelId),
+              trackingID: trackingID,
+              parcelName: parcelData.parcelName,
+              codAmount: parcelData.codAmount,
+              deliveryLocation: parcelData.receiverInfo.address,
+              consumerName: parcelData.receiverInfo.name,
+              consumerPhone: parcelData.receiverInfo.phone,
+              taskType: "delivery",
+              assignedAt: new Date(),
+            },
+          },
+        },
+      );
+
+      if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
+        res
+          .status(200)
+          .send({ success: true, message: "Rider assigned successfully" });
+      } else {
+        res.status(400).send({ message: "Assignment failed" });
+      }
+    } catch (error) {
+      res.status(500).send({ message: "Server error", error: error.message });
+    }
+  },
+);
+
+app.patch(
   "/riders/complete-pickup/update",
   verifyFireBaseToken,
   verifyRiderToken,
