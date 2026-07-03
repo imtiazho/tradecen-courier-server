@@ -1184,12 +1184,12 @@ app.patch("/riders/complete-return-delivered/update", async (req, res) => {
     }
 
     const parcelData = await parcelsCollections.findOne({
-        _id: new ObjectId(parcelId),
-      });
-      await logTracking(parcelData, "returned-to-merchant");
+      _id: new ObjectId(parcelId),
+    });
+    await logTracking(parcelData, "returned-to-merchant");
 
     const riderUpdateResult = await ridersCollections.updateOne(
-      { _id: new ObjectId(riderId)},
+      { _id: new ObjectId(riderId) },
       {
         $inc: { currentTasks: -1 },
         $pull: { activeTasks: { parcelId: new ObjectId(parcelId) } },
@@ -1340,7 +1340,12 @@ app.patch("/parcels/return-hub/received/:parcelId", async (req, res) => {
       });
     }
 
-    const parcelUpdate = await parcelsCollections.findOneAndUpdate(
+    const parcel = await parcelsCollections.findOne({
+      _id: new ObjectId(parcelId),
+    });
+    await logTracking(parcel, "returned-to-hub");
+
+    await parcelsCollections.findOneAndUpdate(
       { _id: new ObjectId(parcelId) },
       {
         $set: {
@@ -1352,38 +1357,25 @@ app.patch("/parcels/return-hub/received/:parcelId", async (req, res) => {
       { returnDocument: "after" },
     );
 
-    if (!parcelUpdate) {
-      return res.status(404).send({
-        success: false,
-        message: "Parcel not found in main parcel collection.",
-      });
-    }
-
-    const riderEmail = parcelUpdate.deliveryRider?.email;
+    const riderEmail = parcel?.deliveryRider?.email;
 
     if (riderEmail) {
       await ridersCollections.updateOne(
         { email: riderEmail },
         {
           $pull: {
-            returnReq: {
-              $or: [{ _id: new ObjectId(parcelId) }],
+            returnLedger: {
+              _id: new ObjectId(parcelId),
             },
           },
         },
       );
     }
 
-    const parcel = await parcelsCollections.findOne({
-      _id: new ObjectId(parcelId),
-    });
-    await logTracking(parcel, "returned-to-hub");
-
     res.send({
       success: true,
       message:
         "Return successfully received at hub and cleared from rider task.",
-      data: parcelUpdate,
     });
   } catch (error) {
     console.error("Return reception error:", error);
