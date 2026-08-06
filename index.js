@@ -3,6 +3,8 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const dns = require("dns");
 const nodemailer = require("nodemailer");
+const NodeCache = require("node-cache");
+const trackingCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -138,6 +140,8 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.ab3rgue.mongodb.net/?appName=Cluster0`;
 
 const client = new MongoClient(uri, {
+  maxPoolSize: 100,
+  minPoolSize: 10,
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
@@ -181,6 +185,11 @@ async function connectDB() {
   trackingLogsCollections = db.collection("trackingLogs");
   payoutsCollections = db.collection("payoutsCollections");
   hqPaymentsCollections = db.collection("hqPaymentsCollections");
+
+  await trackingLogsCollections.createIndex({
+    trackingID: 1,
+    createdAt: -1,
+  });
 
   return {
     userCollections,
@@ -2210,11 +2219,24 @@ app.get(
 
 app.get("/tracking/:id", async (req, res) => {
   try {
+    const cachedData = trackingCache.get(req.params.id);
+
+    if (cachedData) {
+      return res.status(200).send({
+        success: true,
+        source: "cache", // বোঝার সুবিধার্থে (ইচ্ছা হলে বাদ দিতে পারেন)
+        result: cachedData,
+      });
+    }
+
     const { trackingLogsCollections } = await connectDB();
     const result = await trackingLogsCollections
       .find({ trackingID: req.params.id })
       .sort({ createdAt: -1 })
       .toArray();
+
+    trackingCache.set(req.params.id, result);
+
     res.status(200).send({
       success: true,
       result,
@@ -2223,6 +2245,21 @@ app.get("/tracking/:id", async (req, res) => {
     res.status(500).send({ message: "Error loading tracking logs" });
   }
 });
+// app.get("/tracking/:id", async (req, res) => {
+//   try {
+//     const { trackingLogsCollections } = await connectDB();
+//     const result = await trackingLogsCollections
+//       .find({ trackingID: req.params.id })
+//       .sort({ createdAt: -1 })
+//       .toArray();
+//     res.status(200).send({
+//       success: true,
+//       result,
+//     });
+//   } catch (error) {
+//     res.status(500).send({ message: "Error loading tracking logs" });
+//   }
+// });
 
 app.post(
   "/parcels",

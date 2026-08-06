@@ -11,12 +11,14 @@
   },
   "dependencies": {
     "@stripe/react-stripe-js": "^6.3.0",
+    "compression": "^1.8.1",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "firebase-admin": "^13.8.0",
     "firebase-functions": "^7.2.5",
     "mongodb": "^7.2.0",
+    "node-cache": "^5.1.2",
     "nodemailer": "^8.0.7",
     "stripe": "^22.1.1"
   }
