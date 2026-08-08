@@ -5,6 +5,7 @@ const dns = require("dns");
 const nodemailer = require("nodemailer");
 const NodeCache = require("node-cache");
 const trackingCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
+const usersCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -142,6 +143,7 @@ const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@clu
 const client = new MongoClient(uri, {
   maxPoolSize: 100,
   minPoolSize: 10,
+  maxIdleTimeMS: 30000,
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
@@ -186,6 +188,7 @@ async function connectDB() {
   payoutsCollections = db.collection("payoutsCollections");
   hqPaymentsCollections = db.collection("hqPaymentsCollections");
 
+  // Create an index on the trackingLogsCollections for trackingID and createdAt
   await trackingLogsCollections.createIndex({
     trackingID: 1,
     createdAt: -1,
@@ -227,9 +230,17 @@ const logTracking = async (parcel, status) => {
 /*---- User Related APIs ----*/
 app.get("/users", async (req, res) => {
   try {
+    const searchText = req.query.searchText || "";
+    const role = req.query.role || "";
+
+    const cacheKey = `users_search:${searchText}_role:${role}`;
+
+    const cachedData = usersCache.get(cacheKey);
+    if (cachedData) {
+      return res.status(200).send({success: true, data: cachedData, source: "cache"});
+    }
+
     const { userCollections } = await connectDB();
-    const searchText = req.query.searchText;
-    const role = req.query.role;
     const query = {};
 
     if (searchText) {
@@ -247,9 +258,12 @@ app.get("/users", async (req, res) => {
       .find(query)
       .sort({ createdAt: -1 })
       .limit(10)
+      .project({email:1, displayName:1, role:1})
       .toArray();
 
-    res.send(result);
+    usersCache.set(cacheKey, result);
+
+    res.status(200).send({success: true, data: result, source: "database"});
   } catch (error) {
     res.status(500).send({ message: "Internal Server Error" });
   }
@@ -285,7 +299,9 @@ app.get("/user/:email/role", async (req, res) => {
     const { userCollections } = await connectDB();
     const user = await userCollections.findOne({ email: req.params.email });
     res.send({ role: user.role });
-  } catch (error) {}
+  } catch (error) {
+    res.status(500).send({ success: false, error: "Internal Server Error" });
+  }
 });
 
 app.patch("/users/update/:email", async (req, res) => {
