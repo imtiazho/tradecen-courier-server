@@ -6,6 +6,7 @@ const nodemailer = require("nodemailer");
 const NodeCache = require("node-cache");
 const trackingCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
 const usersCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
+const userCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -194,6 +195,13 @@ async function connectDB() {
     createdAt: -1,
   });
 
+  await userCollections.createIndex(
+    {
+      email: 1,
+    },
+    { unique: true },
+  );
+
   return {
     userCollections,
     ridersCollections,
@@ -237,7 +245,9 @@ app.get("/users", async (req, res) => {
 
     const cachedData = usersCache.get(cacheKey);
     if (cachedData) {
-      return res.status(200).send({success: true, data: cachedData, source: "cache"});
+      return res
+        .status(200)
+        .send({ success: true, data: cachedData, source: "cache" });
     }
 
     const { userCollections } = await connectDB();
@@ -258,22 +268,45 @@ app.get("/users", async (req, res) => {
       .find(query)
       .sort({ createdAt: -1 })
       .limit(10)
-      .project({email:1, displayName:1, role:1})
+      .project({ email: 1, displayName: 1, role: 1 })
       .toArray();
 
     usersCache.set(cacheKey, result);
 
-    res.status(200).send({success: true, data: result, source: "database"});
+    res.status(200).send({ success: true, data: result, source: "database" });
   } catch (error) {
     res.status(500).send({ message: "Internal Server Error" });
   }
 });
 
+// Get user by email with caching
 app.get("/user/:email", verifyFireBaseToken, verifyOwner, async (req, res) => {
   try {
-    const { userCollections } = await connectDB();
     const email = req.params.email;
-    const user = await userCollections.findOne({ email: email });
+
+    // Check if the user data is already cached
+    const cacheKey = `user_${email}`;
+    const cachedUser = userCache.get(cacheKey);
+
+    if (cachedUser) {
+      return res.send(cachedUser);
+    }
+
+    const { userCollections } = await connectDB();
+    const user = await userCollections.findOne(
+      { email: email },
+      {
+        projection: {
+          _id: 0,
+          role: 1,
+          isOnboarded: 1,
+          email: 1,
+          displayName: 1,
+          photoURL: 1,
+          createdAt: 1,
+        },
+      },
+    );
 
     if (!user) {
       return res.status(404).send({
@@ -282,13 +315,10 @@ app.get("/user/:email", verifyFireBaseToken, verifyOwner, async (req, res) => {
       });
     }
 
-    res.send({
-      success: true,
-      role: user.role,
-      isOnboarded: user.isOnboarded,
-      email: user.email,
-      ...user,
-    });
+    // Cache the user data for future requests
+    userCache.set(cacheKey, user);
+
+    res.send(user);
   } catch (error) {
     res.status(500).send({ success: false, error: "Internal Server Error" });
   }
