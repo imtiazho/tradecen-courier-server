@@ -330,7 +330,7 @@ app.get("/user/:email", verifyFireBaseToken, verifyOwner, async (req, res) => {
 });
 
 //  Get user role by email with caching
-app.get("/user/:email/role", async (req, res) => {
+app.get("/user/:email/role", verifyFireBaseToken, verifyOwner, async (req, res) => {
   try {
     const cacheKey = `user_${req.params.email}`;
     const cachedRole = userRoleCache.get(cacheKey);
