@@ -7,6 +7,7 @@ const NodeCache = require("node-cache");
 const trackingCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
 const usersCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
 const userCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+const userRoleCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -195,12 +196,16 @@ async function connectDB() {
     createdAt: -1,
   });
 
+  //  User collection index for email to ensure uniqueness and improve query performance
   await userCollections.createIndex(
     {
       email: 1,
     },
     { unique: true },
   );
+
+  // User collection index for email and role to improve query performance for role-based queries
+  await userCollections.createIndex({ email: 1, role: 1 });
 
   return {
     userCollections,
@@ -324,12 +329,24 @@ app.get("/user/:email", verifyFireBaseToken, verifyOwner, async (req, res) => {
   }
 });
 
+//  Get user role by email with caching
 app.get("/user/:email/role", async (req, res) => {
   try {
+    const cacheKey = `user_${req.params.email}`;
+    const cachedRole = userRoleCache.get(cacheKey);
+
+    if (cachedRole) {
+      return res.send({ role: cachedRole });
+    }
+
     const { userCollections } = await connectDB();
     const user = await userCollections.findOne({ email: req.params.email });
+
+    userRoleCache.set(cacheKey, user.role);
+
     res.send({ role: user.role });
   } catch (error) {
+    console.error("API Error Stack:", error);
     res.status(500).send({ success: false, error: "Internal Server Error" });
   }
 });
