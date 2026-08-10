@@ -8,6 +8,7 @@ const trackingCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
 const usersCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
 const userCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const userRoleCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+const managerCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -207,6 +208,12 @@ async function connectDB() {
   // User collection index for email and role to improve query performance for role-based queries
   await userCollections.createIndex({ email: 1, role: 1 });
 
+  // ১. Manager Lookup
+  await hubManagersCollection.createIndex({ email: 1 }, { unique: true });
+
+  // ২. Admin Filters (Region & District)
+  await hubManagersCollection.createIndex({ region: 1, district: 1 });
+
   return {
     userCollections,
     ridersCollections,
@@ -330,26 +337,31 @@ app.get("/user/:email", verifyFireBaseToken, verifyOwner, async (req, res) => {
 });
 
 //  Get user role by email with caching
-app.get("/user/:email/role", verifyFireBaseToken, verifyOwner, async (req, res) => {
-  try {
-    const cacheKey = `user_${req.params.email}`;
-    const cachedRole = userRoleCache.get(cacheKey);
+app.get(
+  "/user/:email/role",
+  verifyFireBaseToken,
+  verifyOwner,
+  async (req, res) => {
+    try {
+      const cacheKey = `user_${req.params.email}`;
+      const cachedRole = userRoleCache.get(cacheKey);
 
-    if (cachedRole) {
-      return res.send({ role: cachedRole });
+      if (cachedRole) {
+        return res.send({ role: cachedRole });
+      }
+
+      const { userCollections } = await connectDB();
+      const user = await userCollections.findOne({ email: req.params.email });
+
+      userRoleCache.set(cacheKey, user.role);
+
+      res.send({ role: user.role });
+    } catch (error) {
+      console.error("API Error Stack:", error);
+      res.status(500).send({ success: false, error: "Internal Server Error" });
     }
-
-    const { userCollections } = await connectDB();
-    const user = await userCollections.findOne({ email: req.params.email });
-
-    userRoleCache.set(cacheKey, user.role);
-
-    res.send({ role: user.role });
-  } catch (error) {
-    console.error("API Error Stack:", error);
-    res.status(500).send({ success: false, error: "Internal Server Error" });
-  }
-});
+  },
+);
 
 app.patch("/users/update/:email", async (req, res) => {
   try {
@@ -462,37 +474,43 @@ app.patch(
   },
 );
 
+// verifyFireBaseToken,
+// verifyRoles("admin", "hub-manager"),
 /* ---- Managers ---- */
-app.get(
-  "/users/hub-managers",
-  verifyFireBaseToken,
-  verifyRoles("admin", "hub-manager"),
-  async (req, res) => {
-    try {
-      const { region, district, email } = req.query;
-      let query = {};
+app.get("/users/hub-managers", async (req, res) => {
+  try {
+    const { region, district, email } = req.query;
 
-      if (email) {
-        query.email = email;
-      }
-
-      if (region) {
-        query.region = region;
-      }
-
-      if (district) {
-        query.district = district;
-      }
-
-      const result = await hubManagersCollection.find(query).toArray();
-
-      res.status(200).send(result);
-    } catch (error) {
-      console.error("Error fetching managers:", error);
-      res.status(500).send({ message: "Internal Server Error" });
+    const cacheKey = `managers_${email || "all"}_${region || "all"}_${district || "all"}`;
+    const cachedData = managerCache.get(cacheKey);
+    if (cachedData) {
+      return res.status(200).send(cachedData);
     }
-  },
-);
+
+    let query = {};
+
+    if (email) {
+      query.email = email;
+    }
+
+    if (region) {
+      query.region = region;
+    }
+
+    if (district) {
+      query.district = district;
+    }
+
+    const result = await hubManagersCollection.find(query).toArray();
+
+    managerCache.set(cacheKey, result);
+
+    res.status(200).send(result);
+  } catch (error) {
+    console.error("Error fetching managers:", error);
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
 
 app.get(
   "/parcels/incoming/:hubName",
