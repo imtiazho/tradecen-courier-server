@@ -474,43 +474,46 @@ app.patch(
   },
 );
 
-// verifyFireBaseToken,
-// verifyRoles("admin", "hub-manager"),
 /* ---- Managers ---- */
-app.get("/users/hub-managers", async (req, res) => {
-  try {
-    const { region, district, email } = req.query;
+app.get(
+  "/users/hub-managers",
+  verifyFireBaseToken,
+  verifyRoles("admin", "hub-manager"),
+  async (req, res) => {
+    try {
+      const { region, district, email } = req.query;
 
-    const cacheKey = `managers_${email || "all"}_${region || "all"}_${district || "all"}`;
-    const cachedData = managerCache.get(cacheKey);
-    if (cachedData) {
-      return res.status(200).send(cachedData);
+      const cacheKey = `managers_${email || "all"}_${region || "all"}_${district || "all"}`;
+      const cachedData = managerCache.get(cacheKey);
+      if (cachedData) {
+        return res.status(200).send(cachedData);
+      }
+
+      let query = {};
+
+      if (email) {
+        query.email = email;
+      }
+
+      if (region) {
+        query.region = region;
+      }
+
+      if (district) {
+        query.district = district;
+      }
+
+      const result = await hubManagersCollection.find(query).toArray();
+
+      managerCache.set(cacheKey, result);
+
+      res.status(200).send(result);
+    } catch (error) {
+      console.error("Error fetching managers:", error);
+      res.status(500).send({ message: "Internal Server Error" });
     }
-
-    let query = {};
-
-    if (email) {
-      query.email = email;
-    }
-
-    if (region) {
-      query.region = region;
-    }
-
-    if (district) {
-      query.district = district;
-    }
-
-    const result = await hubManagersCollection.find(query).toArray();
-
-    managerCache.set(cacheKey, result);
-
-    res.status(200).send(result);
-  } catch (error) {
-    console.error("Error fetching managers:", error);
-    res.status(500).send({ message: "Internal Server Error" });
-  }
-});
+  },
+);
 
 app.get(
   "/parcels/incoming/:hubName",
@@ -1422,6 +1425,7 @@ app.patch("/parcels/return-hub/received/:parcelId", async (req, res) => {
         $set: { "returnReq.$.isHubReceived": true },
       },
     );
+    managerCache.flushAll();
 
     if (managerUpdate.matchedCount === 0) {
       return res.status(404).send({
@@ -1506,7 +1510,8 @@ app.patch("/hub/dispatch-return-to-origin/:parcelId", async (req, res) => {
         $pull: { returnReq: { _id: new ObjectId(parcelId) } },
       },
     );
-
+    managerCache.flushAll();
+    
     res.send({
       success: true,
       message: "Parcel successfully dispatched to the origin warehouse!",
