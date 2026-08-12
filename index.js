@@ -10,6 +10,8 @@ const userCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const userRoleCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const managerCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const parcelCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+const pickupCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
+const sortingCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -224,6 +226,19 @@ async function connectDB() {
   // 2. Destination Search Index
   await parcelsCollections.createIndex({
     "serviceCenters.destination": 1,
+    deliveryStatus: 1,
+  });
+
+  // //
+  await parcelsCollections.createIndex({
+    "senderInfo.area": 1,
+    deliveryStatus: 1,
+    inCity: 1,
+  });
+
+  //
+  await parcelsCollections.createIndex({
+    "receiverInfo.area": 1,
     deliveryStatus: 1,
   });
 
@@ -528,11 +543,10 @@ app.get(
   },
 );
 
-// verifyFireBaseToken,
-// verifyHubManagerToken,
 app.get(
   "/parcels/incoming/:hubName",
-
+  verifyFireBaseToken,
+  verifyHubManagerToken,
   async (req, res) => {
     try {
       const hubName = req.params.hubName;
@@ -587,14 +601,22 @@ app.get(
   verifyHubManagerToken,
   async (req, res) => {
     try {
-      const { parcelsCollections } = await connectDB();
       const hubName = req.params.hubName;
+      const cacheKey = `pickup_parcels_${hubName}`;
+      const cachedData = pickupCache.get(cacheKey);
+      if (cachedData) {
+        return res.status(200).send(cachedData);
+      }
+
+      const { parcelsCollections } = await connectDB();
       const query = {
         "serviceCenters.origin": hubName,
         deliveryStatus: "picked-up",
       };
 
       const result = await parcelsCollections.find(query).toArray();
+      pickupCache.set(cacheKey, result);
+
       res.send(result);
     } catch (error) {
       res.status(500).send({
@@ -605,13 +627,22 @@ app.get(
   },
 );
 
+// verifyFireBaseToken,
+// verifyHubManagerToken,
+
 app.get(
   "/warehouse/sorting-house/:hubName",
-  verifyFireBaseToken,
-  verifyHubManagerToken,
+
   async (req, res) => {
     try {
       const { hubName } = req.params;
+
+      const cacheKey = `sorting_house_${hubName}`;
+      const cachedData = sortingCache.get(cacheKey);
+      if (cachedData) {
+        return res.status(200).send(cachedData);
+      }
+
       const { parcelsCollections } = await connectDB();
 
       // Some logic will be added here. Parcels return system.
@@ -637,6 +668,12 @@ app.get(
           ],
         })
         .toArray();
+
+      sortingCache.set(cacheKey, {
+        dispatchList,
+        deliveryList,
+        total: dispatchList.length + deliveryList.length,
+      });
 
       res.send({
         dispatchList,
@@ -1560,6 +1597,8 @@ app.patch("/parcels/return-origin-hub/received/:parcelId", async (req, res) => {
       },
       { returnDocument: "after" },
     );
+
+    parcelCache.flushAll();
 
     if (!updatedParcel) {
       return res.status(404).send({
