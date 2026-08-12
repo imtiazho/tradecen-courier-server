@@ -9,6 +9,7 @@ const usersCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
 const userCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const userRoleCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const managerCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+const parcelCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -144,7 +145,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.ab3rgue.mongodb.net/?appName=Cluster0`;
 
 const client = new MongoClient(uri, {
-  maxPoolSize: 100,
+  maxPoolSize: 200,
   minPoolSize: 10,
   maxIdleTimeMS: 30000,
   serverApi: {
@@ -208,11 +209,23 @@ async function connectDB() {
   // User collection index for email and role to improve query performance for role-based queries
   await userCollections.createIndex({ email: 1, role: 1 });
 
-  // ১. Manager Lookup
+  // 1. Manager Lookup
   await hubManagersCollection.createIndex({ email: 1 }, { unique: true });
 
-  // ২. Admin Filters (Region & District)
+  // 2. Admin Filters (Region & District)
   await hubManagersCollection.createIndex({ region: 1, district: 1 });
+
+  // 1. Origin Search Index
+  await parcelsCollections.createIndex({
+    "serviceCenters.origin": 1,
+    deliveryStatus: 1,
+  });
+
+  // 2. Destination Search Index
+  await parcelsCollections.createIndex({
+    "serviceCenters.destination": 1,
+    deliveryStatus: 1,
+  });
 
   return {
     userCollections,
@@ -515,20 +528,29 @@ app.get(
   },
 );
 
+// verifyFireBaseToken,
+// verifyHubManagerToken,
 app.get(
   "/parcels/incoming/:hubName",
-  verifyFireBaseToken,
-  verifyHubManagerToken,
+
   async (req, res) => {
     try {
-      const { parcelsCollections } = await connectDB();
       const hubName = req.params.hubName;
+
+      const cacheKey = `incoming_parcels_${hubName}`;
+      const cachedData = parcelCache.get(cacheKey);
+      if (cachedData) {
+        return res.status(200).send(cachedData);
+      }
+
+      const { parcelsCollections } = await connectDB();
       const query = {
         $or: [
           {
             "serviceCenters.origin": hubName,
             deliveryStatus: "parcel-created",
           },
+
           {
             "serviceCenters.origin": hubName,
             deliveryStatus: "assign-pickup-rider",
@@ -547,6 +569,8 @@ app.get(
       };
 
       const result = await parcelsCollections.find(query).toArray();
+      parcelCache.set(cacheKey, result);
+
       res.send(result);
     } catch (error) {
       res.status(500).send({
@@ -1511,7 +1535,7 @@ app.patch("/hub/dispatch-return-to-origin/:parcelId", async (req, res) => {
       },
     );
     managerCache.flushAll();
-    
+
     res.send({
       success: true,
       message: "Parcel successfully dispatched to the origin warehouse!",
