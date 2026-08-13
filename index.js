@@ -4,6 +4,7 @@ const dotenv = require("dotenv");
 const dns = require("dns");
 const nodemailer = require("nodemailer");
 const NodeCache = require("node-cache");
+// const compression = require("compression");
 const trackingCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
 const usersCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
 const userCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
@@ -13,6 +14,7 @@ const parcelCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const pickupCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
 const sortingCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const outForDeliveryCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
+const hubDeliveredCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -35,6 +37,12 @@ dns.setServers(["8.8.8.8", "8.8.4.4"]);
 // Middleware
 app.use(cors());
 app.use(express.json());
+// app.use(
+//   compression({
+//     level: 6,
+//     threshold: 1024,
+//   }),
+// );
 
 const verifyFireBaseToken = async (req, res, next) => {
   const token = req.headers.authorization;
@@ -230,7 +238,6 @@ async function connectDB() {
     deliveryStatus: 1,
   });
 
-  //
   await parcelsCollections.createIndex({
     "senderInfo.area": 1,
     deliveryStatus: 1,
@@ -628,12 +635,10 @@ app.get(
   },
 );
 
-
-
 app.get(
   "/warehouse/sorting-house/:hubName",
-verifyFireBaseToken,
-verifyHubManagerToken,
+  verifyFireBaseToken,
+  verifyHubManagerToken,
   async (req, res) => {
     try {
       const { hubName } = req.params;
@@ -687,14 +692,12 @@ verifyHubManagerToken,
   },
 );
 
-
 app.get(
   "/parcels/out-for-delivery/:hubName",
   verifyFireBaseToken,
   verifyHubManagerToken,
   async (req, res) => {
     try {
-
       const { hubName } = req.params;
       const cacheKey = `out_for_delivery_${req.params.hubName}`;
       const cachedData = outForDeliveryCache.get(cacheKey);
@@ -718,15 +721,21 @@ app.get(
     }
   },
 );
-
+// verifyFireBaseToken,
+// verifyHubManagerToken,
 app.get(
   "/parcels/hub-delivered/:hubName",
-  verifyFireBaseToken,
-  verifyHubManagerToken,
+
   async (req, res) => {
     try {
-      const { parcelsCollections } = await connectDB();
       const { hubName } = req.params;
+      const cacheKey = `hub_delivered_${req.params.hubName}`;
+      const cachedData = hubDeliveredCache.get(cacheKey);
+      if (cachedData) {
+        return res.status(200).send(cachedData);
+      }
+
+      const { parcelsCollections } = await connectDB();
       const query = {
         "serviceCenters.destination": hubName,
         deliveryStatus: "delivered",
@@ -736,9 +745,11 @@ app.get(
         .find(query)
         .sort({ createdAt: -1 })
         .toArray();
+
+      hubDeliveredCache.set(cacheKey, result);
       res.send(result);
     } catch (error) {
-      res.status(500).send({ message: "Error out for delivery parcels" });
+      res.status(500).send({ message: "Error fetching delivered parcels" });
     }
   },
 );
