@@ -12,6 +12,7 @@ const managerCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const parcelCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const pickupCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
 const sortingCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
+const outForDeliveryCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -229,7 +230,7 @@ async function connectDB() {
     deliveryStatus: 1,
   });
 
-  // //
+  //
   await parcelsCollections.createIndex({
     "senderInfo.area": 1,
     deliveryStatus: 1,
@@ -627,12 +628,12 @@ app.get(
   },
 );
 
-// verifyFireBaseToken,
-// verifyHubManagerToken,
+
 
 app.get(
   "/warehouse/sorting-house/:hubName",
-
+verifyFireBaseToken,
+verifyHubManagerToken,
   async (req, res) => {
     try {
       const { hubName } = req.params;
@@ -686,14 +687,22 @@ app.get(
   },
 );
 
+
 app.get(
   "/parcels/out-for-delivery/:hubName",
   verifyFireBaseToken,
   verifyHubManagerToken,
   async (req, res) => {
     try {
-      const { parcelsCollections } = await connectDB();
+
       const { hubName } = req.params;
+      const cacheKey = `out_for_delivery_${req.params.hubName}`;
+      const cachedData = outForDeliveryCache.get(cacheKey);
+      if (cachedData) {
+        return res.status(200).send(cachedData);
+      }
+
+      const { parcelsCollections } = await connectDB();
       const query = {
         "serviceCenters.destination": hubName,
         deliveryStatus: {
@@ -702,6 +711,7 @@ app.get(
       };
 
       const result = await parcelsCollections.find(query).toArray();
+      outForDeliveryCache.set(cacheKey, result);
       res.send(result);
     } catch (error) {
       res.status(500).send({ message: "Error out for delivery parcels" });
