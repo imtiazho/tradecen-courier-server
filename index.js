@@ -22,6 +22,7 @@ const returnWarehouseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const allMerchantsCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const merchantsAreaWiseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const targetedMerchantCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
+const payoutSummaryCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -298,6 +299,17 @@ async function connectDB() {
   await merchantsCollections.createIndex({ area: 1 });
 
   await merchantsCollections.createIndex({ email: 1 });
+
+  // Parcels Collection Indexes
+  await parcelsCollections.createIndex({
+    "senderInfo.email": 1,
+    deliveryStatus: 1,
+    merchantRevenueStatus: 1,
+  });
+
+  // Payouts Collection Indexes
+  await payoutsCollections.createIndex({ email: 1, payoutStatus: 1 });
+  await payoutsCollections.createIndex({ email: 1, requestedAt: -1 });
 
   return {
     userCollections,
@@ -1929,44 +1941,47 @@ app.post("/merchants", async (req, res) => {
   }
 });
 
-// verifyFireBaseToken,
-// verifyMerchantToken,
-// verifyOwner,
-app.get("/merchant/:email", async (req, res) => {
-  try {
-    const email = req.params.email;
-    const cacheKey = `merchant_${email}`;
-    const cachedData = targetedMerchantCache.get(cacheKey);
-    if (cachedData) {
-      return res.send(cachedData);
-    }
+app.get(
+  "/merchant/:email",
+  verifyFireBaseToken,
+  verifyMerchantToken,
+  verifyOwner,
+  async (req, res) => {
+    try {
+      const email = req.params.email;
+      const cacheKey = `merchant_${email}`;
+      const cachedData = targetedMerchantCache.get(cacheKey);
+      if (cachedData) {
+        return res.send(cachedData);
+      }
 
-    const { merchantsCollections } = await connectDB();
-    const merchant = await merchantsCollections.findOne({ email: email });
+      const { merchantsCollections } = await connectDB();
+      const merchant = await merchantsCollections.findOne({ email: email });
 
-    if (!merchant) {
-      return res.status(404).send({
-        success: false,
-        message: "User not found in database",
+      if (!merchant) {
+        return res.status(404).send({
+          success: false,
+          message: "User not found in database",
+        });
+      }
+
+      const responseData = {
+        success: true,
+        role: merchant.role,
+        email: merchant.email,
+        ...merchant,
+      };
+
+      targetedMerchantCache.set(cacheKey, responseData);
+
+      res.send({
+        responseData,
       });
+    } catch (error) {
+      res.status(500).send({ success: false, error: "Internal Server Error" });
     }
-
-    const responseData = {
-      success: true,
-      role: merchant.role,
-      email: merchant.email,
-      ...merchant,
-    };
-
-    targetedMerchantCache.set(cacheKey, responseData);
-
-    res.send({
-      responseData,
-    });
-  } catch (error) {
-    res.status(500).send({ success: false, error: "Internal Server Error" });
-  }
-});
+  },
+);
 
 app.patch(
   "/merchant-update/:email",
@@ -1999,8 +2014,14 @@ app.patch(
 /* ---- Payment Payout ---- */
 app.get("/payment-payout-summary/:email", async (req, res) => {
   try {
-    const { parcelsCollections, payoutsCollections } = await connectDB();
     const email = req.params.email;
+    const cacheKey = `payout_summary_${email.toLowerCase()}`;
+    const cachedData = payoutSummaryCache.get(cacheKey);
+    if (cachedData) {
+      return res.send(cachedData);
+    }
+
+    const { parcelsCollections, payoutsCollections } = await connectDB();
     const deliveredParcels = await parcelsCollections
       .find({
         "senderInfo.email": email,
@@ -2053,7 +2074,7 @@ app.get("/payment-payout-summary/:email", async (req, res) => {
       .sort({ requestedAt: -1 })
       .toArray();
 
-    res.send({
+    const responseData = {
       success: true,
       totalRevenue: availableBalance,
       totalWithdrawn,
@@ -2063,7 +2084,13 @@ app.get("/payment-payout-summary/:email", async (req, res) => {
       recentTransactions,
       pendingTransactions,
       completedPayouts,
-    });
+    };
+    
+    payoutSummaryCache.set(cacheKey, responseData);
+
+    res.send(
+      responseData,
+    );
   } catch (error) {
     res.status(500).send({ success: false, error: "Internal Server Error" });
   }
