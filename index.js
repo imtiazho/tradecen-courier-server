@@ -18,6 +18,7 @@ const hubDeliveredCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const riderCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const ridersCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 const availableRidersCache = new NodeCache({ stdTTL: 15, checkperiod: 30 });
+const returnWarehouseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -1131,36 +1132,39 @@ app.post("/riders", async (req, res) => {
     }
   }));
 
-// verifyFireBaseToken,
-// verifyHubManagerToken,
-app.get("/riders/available/:areaName", async (req, res) => {
-  try {
-    const { areaName } = req.params;
+app.get(
+  "/riders/available/:areaName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
+  async (req, res) => {
+    try {
+      const { areaName } = req.params;
 
-    const cacheKey = `available_riders_${areaName.toLowerCase()}`;
-    const cachedRiders = availableRidersCache.get(cacheKey);
-    if (cachedRiders) {
-      return res.status(200).send(cachedRiders);
+      const cacheKey = `available_riders_${areaName.toLowerCase()}`;
+      const cachedRiders = availableRidersCache.get(cacheKey);
+      if (cachedRiders) {
+        return res.status(200).send(cachedRiders);
+      }
+
+      const { ridersCollections } = await connectDB();
+
+      const query = {
+        area: areaName,
+        workStatus: "available",
+        currentTasks: { $lt: 10 },
+      };
+
+      const riders = await ridersCollections.find(query).toArray();
+
+      availableRidersCache.set(cacheKey, riders);
+      res.status(200).send(riders);
+    } catch (error) {
+      res
+        .status(500)
+        .send({ message: "Error fetching riders", error: error.message });
     }
-
-    const { ridersCollections } = await connectDB();
-
-    const query = {
-      area: areaName,
-      workStatus: "available",
-      currentTasks: { $lt: 10 },
-    };
-
-    const riders = await ridersCollections.find(query).toArray();
-
-    availableRidersCache.set(cacheKey, riders);
-    res.status(200).send(riders);
-  } catch (error) {
-    res
-      .status(500)
-      .send({ message: "Error fetching riders", error: error.message });
-  }
-});
+  },
+);
 
 app.patch(
   "/riders/:id",
@@ -1722,14 +1726,23 @@ app.patch("/parcels/return-origin-hub/received/:parcelId", async (req, res) => {
 
 app.get("/warehouse/return-house/:hubName", async (req, res) => {
   try {
+    const { hubName } = req.params;
+
+    const cacheKey = `return_warehouse_${hubName.toLowerCase()}`;
+    const cachedParcels = returnWarehouseCache.get(cacheKey);
+    if (cachedParcels) {
+      return res.send({ success: true, returnList: cachedParcels });
+    }
+
     const { parcelsCollections } = await connectDB();
     const parcels = await parcelsCollections
       .find({
-        "serviceCenters.origin": req.params.hubName,
+        "serviceCenters.origin": hubName,
         deliveryStatus: "receive-from-origin-warehouse",
       })
       .toArray();
 
+    returnWarehouseCache.set(cacheKey, parcels);
     res.send({ success: true, returnList: parcels });
   } catch (error) {
     res.status(500).send({ success: false, message: "Internal server error" });
