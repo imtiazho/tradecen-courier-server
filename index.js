@@ -23,6 +23,7 @@ const allMerchantsCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const merchantsAreaWiseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const targetedMerchantCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const payoutSummaryCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
+const allPayoutsCache = new NodeCache({ stdTTL: 20, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -310,6 +311,8 @@ async function connectDB() {
   // Payouts Collection Indexes
   await payoutsCollections.createIndex({ email: 1, payoutStatus: 1 });
   await payoutsCollections.createIndex({ email: 1, requestedAt: -1 });
+
+  await payoutsCollections.createIndex({ payoutStatus: 1, requestedAt: -1 });
 
   return {
     userCollections,
@@ -2258,8 +2261,14 @@ app.patch("/approve-payout/:id", async (req, res) => {
 
 app.get("/all-payouts", async (req, res) => {
   try {
-    const { payoutsCollections } = await connectDB();
+    const cacheKey = "all_pending_payouts";
+    const cachedData = allPayoutsCache.get(cacheKey);
+    if (cachedData) {
+      return res.send(cachedData);
+    }
 
+
+    const { payoutsCollections } = await connectDB();
     const query = { payoutStatus: "pending" };
 
     const result = await payoutsCollections
@@ -2267,7 +2276,11 @@ app.get("/all-payouts", async (req, res) => {
       .sort({ requestedAt: -1 })
       .toArray();
 
-    res.send({ success: true, data: result });
+    const responseData = { success: true, data: result };
+
+    allPayoutsCache.set(cacheKey, responseData);
+
+    res.send({ success: true, data: responseData });
   } catch (error) {
     res.status(500).send({ success: false, error: "Internal Server Error" });
   }
