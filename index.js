@@ -17,6 +17,7 @@ const outForDeliveryCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const hubDeliveredCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const riderCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const ridersCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
+const availableRidersCache = new NodeCache({ stdTTL: 15, checkperiod: 30 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -276,13 +277,19 @@ async function connectDB() {
     deliveryStatus: 1,
   });
 
-  // await ridersCollections.createIndex({
-  //   area: 1,
-  //   status: 1,
-  //   workStatus: 1,
-  // });
+  await ridersCollections.createIndex({
+    area: 1,
+    status: 1,
+    workStatus: 1,
+  });
 
-  // await ridersCollections.createIndex({ email: 1 });
+  await ridersCollections.createIndex({ email: 1 });
+
+  await ridersCollections.createIndex({
+    area: 1,
+    workStatus: 1,
+    currentTasks: 1,
+  });
 
   return {
     userCollections,
@@ -1082,21 +1089,19 @@ app.post("/riders", async (req, res) => {
 //     res.status(500).send({ message: "Internal Server Error" });
 //   }
 // });
-// verifyFireBaseToken,
-// verifyRoles("admin", "hub-manager", "rider"),
 
-app.get(
-  "/riders",
-  async (req, res) => {
+(verifyFireBaseToken,
+  verifyRoles("admin", "hub-manager", "rider"),
+  app.get("/riders", async (req, res) => {
     try {
       const { status, workStatus, email, area } = req.query;
       const cacheKey = `riders_${status || "all"}_${workStatus || "all"}_${email || "all"}_${area || "all"}`;
-      
+
       const cachedData = ridersCache.get(cacheKey);
       if (cachedData) {
         return res.status(200).send(cachedData);
       }
-      
+
       const { ridersCollections } = await connectDB();
       let query = {};
       if (status) {
@@ -1124,33 +1129,38 @@ app.get(
       console.error("Error fetching riders:", error);
       res.status(500).send({ message: "Internal Server Error" });
     }
-  },
-);
+  }));
 
-app.get(
-  "/riders/available/:areaName",
-  verifyFireBaseToken,
-  verifyHubManagerToken,
-  async (req, res) => {
-    try {
-      const { areaName } = req.params;
-      const { ridersCollections } = await connectDB();
+// verifyFireBaseToken,
+// verifyHubManagerToken,
+app.get("/riders/available/:areaName", async (req, res) => {
+  try {
+    const { areaName } = req.params;
 
-      const query = {
-        area: areaName,
-        workStatus: "available",
-        currentTasks: { $lt: 10 },
-      };
-
-      const riders = await ridersCollections.find(query).toArray();
-      res.status(200).send(riders);
-    } catch (error) {
-      res
-        .status(500)
-        .send({ message: "Error fetching riders", error: error.message });
+    const cacheKey = `available_riders_${areaName.toLowerCase()}`;
+    const cachedRiders = availableRidersCache.get(cacheKey);
+    if (cachedRiders) {
+      return res.status(200).send(cachedRiders);
     }
-  },
-);
+
+    const { ridersCollections } = await connectDB();
+
+    const query = {
+      area: areaName,
+      workStatus: "available",
+      currentTasks: { $lt: 10 },
+    };
+
+    const riders = await ridersCollections.find(query).toArray();
+
+    availableRidersCache.set(cacheKey, riders);
+    res.status(200).send(riders);
+  } catch (error) {
+    res
+      .status(500)
+      .send({ message: "Error fetching riders", error: error.message });
+  }
+});
 
 app.patch(
   "/riders/:id",
