@@ -19,6 +19,7 @@ const riderCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const ridersCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 const availableRidersCache = new NodeCache({ stdTTL: 15, checkperiod: 30 });
 const returnWarehouseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
+const allMerchantsCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -1843,15 +1844,23 @@ app.delete("/riders/:id", async (req, res) => {
 });
 
 /* ---- Merchant APIs Start ---- */
+
 app.get(
   "/all-merchants",
   verifyFireBaseToken,
   verifyAdminToken,
   async (req, res) => {
     try {
+      const cacheKey = "allMerchants";
+      const cacheData = allMerchantsCache.get(cacheKey);
+      if (cacheData) {
+        return res.send({ success: true, cacheData });
+      }
       const { merchantsCollections } = await connectDB();
       const result = await merchantsCollections.find({}).toArray();
-      console.log(req.decoded_email);
+
+      allMerchantsCache.set(cacheKey, result);
+
       res.send(result);
     } catch (error) {
       res.status(500).send({ success: false, error: "Internal Server Error" });
