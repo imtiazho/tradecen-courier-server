@@ -20,6 +20,7 @@ const ridersCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 const availableRidersCache = new NodeCache({ stdTTL: 15, checkperiod: 30 });
 const returnWarehouseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const allMerchantsCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
+const merchantsAreaWiseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -292,6 +293,9 @@ async function connectDB() {
     workStatus: 1,
     currentTasks: 1,
   });
+
+
+  await merchantsCollections.createIndex({ area: 1 });
 
   return {
     userCollections,
@@ -1868,19 +1872,28 @@ app.get(
   },
 );
 
+// verifyFireBaseToken,
+// verifyHubManagerToken,
 app.get(
   "/area-merchant/:hubName",
-  verifyFireBaseToken,
-  verifyHubManagerToken,
   async (req, res) => {
     try {
-      const { merchantsCollections } = await connectDB();
       const { hubName } = req.params;
+      const cacheKey = `area_merchant_${hubName}`;
+      const cachedMerchants = merchantsAreaWiseCache.get(cacheKey);
+      if (cachedMerchants) {
+        return res.send(cachedMerchants);
+      }
+
+      const { merchantsCollections } = await connectDB();
       const result = await merchantsCollections
         .find({
           area: hubName,
         })
         .toArray();
+
+      merchantsAreaWiseCache.set(cacheKey, result);
+
       res.send(result);
     } catch (error) {
       res.status(500).send({ success: false, error: "Internal Server Error" });
