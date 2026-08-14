@@ -21,6 +21,7 @@ const availableRidersCache = new NodeCache({ stdTTL: 15, checkperiod: 30 });
 const returnWarehouseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const allMerchantsCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const merchantsAreaWiseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
+const targetedMerchantCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -294,8 +295,9 @@ async function connectDB() {
     currentTasks: 1,
   });
 
-
   await merchantsCollections.createIndex({ area: 1 });
+
+  await merchantsCollections.createIndex({ email: 1 });
 
   return {
     userCollections,
@@ -1872,10 +1874,10 @@ app.get(
   },
 );
 
-// verifyFireBaseToken,
-// verifyHubManagerToken,
 app.get(
   "/area-merchant/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
   async (req, res) => {
     try {
       const { hubName } = req.params;
@@ -1927,35 +1929,44 @@ app.post("/merchants", async (req, res) => {
   }
 });
 
-app.get(
-  "/merchant/:email",
-  verifyFireBaseToken,
-  verifyMerchantToken,
-  verifyOwner,
-  async (req, res) => {
-    try {
-      const { merchantsCollections } = await connectDB();
-      const email = req.params.email;
-      const merchant = await merchantsCollections.findOne({ email: email });
-
-      if (!merchant) {
-        return res.status(404).send({
-          success: false,
-          message: "User not found in database",
-        });
-      }
-
-      res.send({
-        success: true,
-        role: merchant.role,
-        email: merchant.email,
-        ...merchant,
-      });
-    } catch (error) {
-      res.status(500).send({ success: false, error: "Internal Server Error" });
+// verifyFireBaseToken,
+// verifyMerchantToken,
+// verifyOwner,
+app.get("/merchant/:email", async (req, res) => {
+  try {
+    const email = req.params.email;
+    const cacheKey = `merchant_${email}`;
+    const cachedData = targetedMerchantCache.get(cacheKey);
+    if (cachedData) {
+      return res.send(cachedData);
     }
-  },
-);
+
+    const { merchantsCollections } = await connectDB();
+    const merchant = await merchantsCollections.findOne({ email: email });
+
+    if (!merchant) {
+      return res.status(404).send({
+        success: false,
+        message: "User not found in database",
+      });
+    }
+
+    const responseData = {
+      success: true,
+      role: merchant.role,
+      email: merchant.email,
+      ...merchant,
+    };
+
+    targetedMerchantCache.set(cacheKey, responseData);
+
+    res.send({
+      responseData,
+    });
+  } catch (error) {
+    res.status(500).send({ success: false, error: "Internal Server Error" });
+  }
+});
 
 app.patch(
   "/merchant-update/:email",
