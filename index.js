@@ -16,6 +16,7 @@ const sortingCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const outForDeliveryCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const hubDeliveredCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const riderCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
+const ridersCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -274,6 +275,14 @@ async function connectDB() {
     "pickupRider.assignedAt": 1,
     deliveryStatus: 1,
   });
+
+  // await ridersCollections.createIndex({
+  //   area: 1,
+  //   status: 1,
+  //   workStatus: 1,
+  // });
+
+  // await ridersCollections.createIndex({ email: 1 });
 
   return {
     userCollections,
@@ -780,11 +789,11 @@ app.get(
 );
 
 /*---- Rider Related APIs Start ----*/
-// verifyFireBaseToken,
-//   verifyRiderToken,
+
 app.get(
   "/rider/:email",
-
+  verifyFireBaseToken,
+  verifyRiderToken,
   async (req, res) => {
     try {
       const email = req.params.email;
@@ -1073,15 +1082,22 @@ app.post("/riders", async (req, res) => {
 //     res.status(500).send({ message: "Internal Server Error" });
 //   }
 // });
+// verifyFireBaseToken,
+// verifyRoles("admin", "hub-manager", "rider"),
 
 app.get(
   "/riders",
-  verifyFireBaseToken,
-  verifyRoles("admin", "hub-manager", "rider"),
   async (req, res) => {
     try {
-      const { ridersCollections } = await connectDB();
       const { status, workStatus, email, area } = req.query;
+      const cacheKey = `riders_${status || "all"}_${workStatus || "all"}_${email || "all"}_${area || "all"}`;
+      
+      const cachedData = ridersCache.get(cacheKey);
+      if (cachedData) {
+        return res.status(200).send(cachedData);
+      }
+      
+      const { ridersCollections } = await connectDB();
       let query = {};
       if (status) {
         query.status = status;
@@ -1100,6 +1116,8 @@ app.get(
       }
 
       const result = await ridersCollections.find(query).toArray();
+
+      ridersCache.set(cacheKey, result);
 
       res.status(200).send(result);
     } catch (error) {
