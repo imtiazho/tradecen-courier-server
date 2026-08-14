@@ -15,6 +15,7 @@ const pickupCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
 const sortingCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const outForDeliveryCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const hubDeliveredCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
+const riderCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -247,6 +248,30 @@ async function connectDB() {
   //
   await parcelsCollections.createIndex({
     "receiverInfo.area": 1,
+    deliveryStatus: 1,
+  });
+
+  await parcelsCollections.createIndex({
+    "deliveryRider.email": 1,
+    deliveryStatus: 1,
+    createdAt: -1,
+  });
+
+  await parcelsCollections.createIndex({
+    "pickupRider.email": 1,
+    deliveryStatus: 1,
+    createdAt: -1,
+  });
+
+  await parcelsCollections.createIndex({
+    "deliveryRider.email": 1,
+    "deliveryRider.assignedAt": 1,
+    deliveryStatus: 1,
+  });
+
+  await parcelsCollections.createIndex({
+    "pickupRider.email": 1,
+    "pickupRider.assignedAt": 1,
     deliveryStatus: 1,
   });
 
@@ -721,11 +746,11 @@ app.get(
     }
   },
 );
-// verifyFireBaseToken,
-// verifyHubManagerToken,
+
 app.get(
   "/parcels/hub-delivered/:hubName",
-
+  verifyFireBaseToken,
+  verifyHubManagerToken,
   async (req, res) => {
     try {
       const { hubName } = req.params;
@@ -755,14 +780,21 @@ app.get(
 );
 
 /*---- Rider Related APIs Start ----*/
+// verifyFireBaseToken,
+//   verifyRiderToken,
 app.get(
   "/rider/:email",
-  verifyFireBaseToken,
-  verifyRiderToken,
+
   async (req, res) => {
     try {
-      const { ridersCollections, parcelsCollections } = await connectDB();
       const email = req.params.email;
+      const cacheKey = `rider_${email}`;
+      const cachedData = riderCache.get(cacheKey);
+      if (cachedData) {
+        return res.status(200).send(cachedData);
+      }
+
+      const { ridersCollections, parcelsCollections } = await connectDB();
       const riderData = await ridersCollections.findOne({ email: email });
       if (!riderData) {
         return res
@@ -877,6 +909,27 @@ app.get(
           (total, parcel) => total + (Number(parcel.parcelWeight) || 0),
           0,
         );
+
+      riderCache.set(cacheKey, {
+        success: true,
+        riderData,
+        allHandledParcels,
+        assignedParcels,
+        holdUpParcels,
+        deliveredParcels,
+        totalCollectedAmount,
+        conversionRate,
+        loadHandled,
+        todaysParcels,
+        allDeliveryCompleteParcels,
+        allPickUpCompleteParcels,
+        todaysParcelCount: todaysParcels.length || 0,
+        todayPickUpCompleteParcels,
+        todayDeliveryCompleteParcels,
+        todaysCompleteTotal:
+          todayPickUpCompleteParcels.length +
+            todayDeliveryCompleteParcels.length || 0,
+      });
 
       res.send({
         success: true,
