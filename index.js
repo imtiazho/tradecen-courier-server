@@ -27,6 +27,7 @@ const allPayoutsCache = new NodeCache({ stdTTL: 20, checkperiod: 60 });
 const parcelsCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const parcelDetailCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const lateInvoicesCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
+const merchantUnpaidCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -323,11 +324,17 @@ async function connectDB() {
     createdAt: -1,
   });
 
-  // 
+  //
   await parcelsCollections.createIndex({
     "senderInfo.email": 1,
     deliveryChargeStatus: 1,
     deliveryStatus: 1,
+  });
+
+  await parcelsCollections.createIndex({
+    "senderInfo.email": 1,
+    deliveryChargeStatus: 1,
+    createdAt: -1,
   });
 
   return {
@@ -2387,46 +2394,69 @@ app.get("/parcel/:parcelID", async (req, res) => {
   }
 });
 
-// verifyFireBaseToken,
-// verifyMerchantToken,
-// verifyOwner,
-app.get("/late-invoices/:email", async (req, res) => {
-  try {
-    const cacheKey = `late_invoices_${req.params.email}`;
+app.get(
+  "/late-invoices/:email",
+  verifyFireBaseToken,
+  verifyMerchantToken,
+  verifyOwner,
+  async (req, res) => {
+    try {
+      const cacheKey = `late_invoices_${req.params.email}`;
 
-    const cachedData = lateInvoicesCache.get(cacheKey);
-    if (cachedData) {
-      return res.send(cachedData);
+      const cachedData = lateInvoicesCache.get(cacheKey);
+      if (cachedData) {
+        return res.send(cachedData);
+      }
+      const { parcelsCollections } = await connectDB();
+      const lateInvoices = await parcelsCollections
+        .find({
+          "senderInfo.email": req.params.email,
+          deliveryChargeStatus: "unpaid",
+          deliveryStatus: "delivered",
+        })
+        .toArray();
+
+      lateInvoicesCache.set(cacheKey, lateInvoices);
+
+      res.send(lateInvoices);
+    } catch (error) {
+      res.status(500).send({ message: "Failed to fetch late invoices" });
     }
-    const { parcelsCollections } = await connectDB();
-    const lateInvoices = await parcelsCollections
-      .find({
-        "senderInfo.email": req.params.email,
-        deliveryChargeStatus: "unpaid",
-        deliveryStatus: "delivered",
-      })
-      .toArray();
-
-    lateInvoicesCache.set(cacheKey, lateInvoices);
-
-    res.send(lateInvoices);
-  } catch (error) {
-    res.status(500).send({ message: "Failed to fetch late invoices" });
-  }
-});
+  },
+);
 
 app.get("/parcels/unpaid/:email", async (req, res) => {
   try {
     const { email } = req.params;
-    const { parcelsCollections } = await connectDB();
+    const cacheKey = `unpaid_parcels_${email}`;
+    const cachedData = merchantUnpaidCache.get(cacheKey);
+    if (cachedData) {
+      res.setHeader("Content-Type", "application/json");
+      return res.status(200).send(cachedData);
+    }
 
+    const { parcelsCollections } = await connectDB();
     const query = {
       "senderInfo.email": email,
       deliveryChargeStatus: "unpaid",
     };
 
     const unpaidParcels = await parcelsCollections
-      .find(query)
+      .find(
+        {
+          "senderInfo.email": email,
+          deliveryChargeStatus: "unpaid",
+        },
+        {
+          projection: {
+            trackingID: 1,
+            parcelName: 1,
+            deliveryCharge: 1,
+            deliveryStatus: 1,
+            createdAt: 1,
+          },
+        }
+      )
       .sort({ createdAt: -1 })
       .toArray();
 
@@ -2435,12 +2465,19 @@ app.get("/parcels/unpaid/:email", async (req, res) => {
       0,
     );
 
-    res.status(200).send({
+    const responsePayload = {
       success: true,
       totalDue,
       count: unpaidParcels.length,
       data: unpaidParcels,
-    });
+    };
+
+    const jsonString = JSON.stringify(responsePayload);
+    merchantUnpaidCache.set(cacheKey, jsonString);
+
+    res.setHeader("Content-Type", "application/json");
+    res.send(jsonString);
+
   } catch (error) {
     console.error("Error fetching unpaid parcels:", error);
     res.status(500).send({ success: false, message: "Internal Server Error" });
