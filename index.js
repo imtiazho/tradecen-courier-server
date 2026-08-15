@@ -25,6 +25,8 @@ const targetedMerchantCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const payoutSummaryCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const allPayoutsCache = new NodeCache({ stdTTL: 20, checkperiod: 60 });
 const parcelsCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
+const parcelDetailCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
+
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -2291,10 +2293,11 @@ app.get("/all-payouts", async (req, res) => {
 });
 
 /*---- Parcels Related APIs ----*/
-// verifyFireBaseToken,
-// verifyMerchantToken,
-// verifyOwner,
-app.get("/parcels", async (req, res) => {
+app.get("/parcels", 
+  verifyFireBaseToken,
+  verifyMerchantToken,
+  verifyOwner,
+  async (req, res) => {
   try {
     const { email, filter, search, status } = req.query;
     const { parcelsCollections } = await connectDB();
@@ -2354,10 +2357,21 @@ app.get("/parcels", async (req, res) => {
 
 app.get("/parcel/:parcelID", async (req, res) => {
   try {
+    const cacheKey = `parcel_${req.params.parcelID}`;
+    const cachedParcel = parcelDetailCache.get(cacheKey);
+
+    if (cachedParcel) {
+      return res.send(cachedParcel);
+    }
+
     const { parcelsCollections } = await connectDB();
     const parcel = await parcelsCollections.findOne({
       _id: new ObjectId(req.params.parcelID),
     });
+
+    // 
+    parcelDetailCache.set(cacheKey, parcel);
+
     res.send(parcel);
   } catch (error) {
     res.status(500).send({ success: false, error: "Internal Server Error" });
