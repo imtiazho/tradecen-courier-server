@@ -2583,64 +2583,150 @@ app.get(
       const { filter } = req.query;
 
       const cacheKey = `parcel_rev_stats_${email}_${filter}`;
+
       const cachedString = revenueStatsCache.get(cacheKey);
       if (cachedString) {
         res.setHeader("Content-Type", "application/json");
         return res.status(200).send(cachedString);
       }
 
-      const { parcelsCollections } = await connectDB();
-      let startDate = new Date();
+      if (!pendingRequests.has(cacheKey)) {
+        const fetchPromise = (async () => {
+          const { parcelsCollections } = await connectDB();
+          let startDate = new Date();
 
-      if (filter === "this-week") {
-        startDate.setDate(startDate.getDate() - 7);
-      } else if (filter === "last-week") {
-        startDate.setDate(startDate.getDate() - 14);
-      } else if (filter === "last-month") {
-        startDate.setMonth(startDate.getMonth() - 1);
-      } else {
-        startDate.setDate(startDate.getDate() - 7);
-      }
+          if (filter === "this-week") {
+            startDate.setDate(startDate.getDate() - 7);
+          } else if (filter === "last-week") {
+            startDate.setDate(startDate.getDate() - 14);
+          } else if (filter === "last-month") {
+            startDate.setMonth(startDate.getMonth() - 1);
+          } else {
+            startDate.setDate(startDate.getDate() - 7);
+          }
 
-      const stats = await parcelsCollections
-        .aggregate([
-          {
-            $match: {
-              "senderInfo.email": req.params.email,
-              deliveryStatus: "delivered",
-              createdAt: { $gte: startDate.toISOString() },
-            },
-          },
-          {
-            $group: {
-              _id: {
-                $dateToString: {
-                  format: "%d %b",
-                  date: { $toDate: "$createdAt" },
+          const stats = await parcelsCollections
+            .aggregate([
+              {
+                $match: {
+                  "senderInfo.email": req.params.email,
+                  deliveryStatus: "delivered",
+                  createdAt: { $gte: startDate.toISOString() },
                 },
               },
-              totalRevenue: { $sum: "$codAmount" },
-            },
-          },
-          { $sort: { _id: 1 } },
-        ])
-        .toArray();
+              {
+                $group: {
+                  _id: {
+                    $dateToString: {
+                      format: "%d %b",
+                      date: { $toDate: "$createdAt" },
+                    },
+                  },
+                  totalRevenue: { $sum: "$codAmount" },
+                },
+              },
+              { $sort: { _id: 1 } },
+            ])
+            .toArray();
 
-      const chartData = stats.map((element) => ({
-        name: element._id,
-        value: element.totalRevenue,
-      }));
+          const chartData = stats.map((element) => ({
+            name: element._id,
+            value: element.totalRevenue,
+          }));
 
-      const jsonString = JSON.stringify(chartData);
-      revenueStatsCache.set(cacheKey, jsonString);
+          const jsonString = JSON.stringify(chartData);
+          revenueStatsCache.set(cacheKey, jsonString);
+          return jsonString;
+        })();
+
+        pendingRequests.set(cacheKey, fetchPromise);
+      }
+
+      const jsonString = await pendingRequests.get(cacheKey);
+
+      pendingRequests.delete(cacheKey);
 
       res.setHeader("Content-Type", "application/json");
       res.status(200).send(jsonString);
     } catch (error) {
+      const email = req.params.email;
+      const { filter } = req.query;
+      pendingRequests.delete(`parcel_rev_stats_${email}_${filter}`);
+
       res.status(500).send({ message: "Internal Server Error" });
     }
-  },
+  }
 );
+
+// app.get(
+//   "/revenue/stats/:email",
+//   verifyFireBaseToken,
+//   verifyMerchantToken,
+//   verifyOwner,
+//   async (req, res) => {
+//     try {
+//       const email = req.params.email;
+//       const { filter } = req.query;
+
+//       const cacheKey = `parcel_rev_stats_${email}_${filter}`;
+//       const cachedString = revenueStatsCache.get(cacheKey);
+//       if (cachedString) {
+//         res.setHeader("Content-Type", "application/json");
+//         return res.status(200).send(cachedString);
+//       }
+
+//       const { parcelsCollections } = await connectDB();
+//       let startDate = new Date();
+
+//       if (filter === "this-week") {
+//         startDate.setDate(startDate.getDate() - 7);
+//       } else if (filter === "last-week") {
+//         startDate.setDate(startDate.getDate() - 14);
+//       } else if (filter === "last-month") {
+//         startDate.setMonth(startDate.getMonth() - 1);
+//       } else {
+//         startDate.setDate(startDate.getDate() - 7);
+//       }
+
+//       const stats = await parcelsCollections
+//         .aggregate([
+//           {
+//             $match: {
+//               "senderInfo.email": req.params.email,
+//               deliveryStatus: "delivered",
+//               createdAt: { $gte: startDate.toISOString() },
+//             },
+//           },
+//           {
+//             $group: {
+//               _id: {
+//                 $dateToString: {
+//                   format: "%d %b",
+//                   date: { $toDate: "$createdAt" },
+//                 },
+//               },
+//               totalRevenue: { $sum: "$codAmount" },
+//             },
+//           },
+//           { $sort: { _id: 1 } },
+//         ])
+//         .toArray();
+
+//       const chartData = stats.map((element) => ({
+//         name: element._id,
+//         value: element.totalRevenue,
+//       }));
+
+//       const jsonString = JSON.stringify(chartData);
+//       revenueStatsCache.set(cacheKey, jsonString);
+
+//       res.setHeader("Content-Type", "application/json");
+//       res.status(200).send(jsonString);
+//     } catch (error) {
+//       res.status(500).send({ message: "Internal Server Error" });
+//     }
+//   },
+// );
 
 // app.get("/merchant-parcels/:email", async (req, res) => {
 //   try {
