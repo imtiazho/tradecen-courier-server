@@ -26,7 +26,7 @@ const payoutSummaryCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const allPayoutsCache = new NodeCache({ stdTTL: 20, checkperiod: 60 });
 const parcelsCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const parcelDetailCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
-
+const lateInvoicesCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -321,6 +321,13 @@ async function connectDB() {
     "senderInfo.email": 1,
     deliveryStatus: 1,
     createdAt: -1,
+  });
+
+  // 
+  await parcelsCollections.createIndex({
+    "senderInfo.email": 1,
+    deliveryChargeStatus: 1,
+    deliveryStatus: 1,
   });
 
   return {
@@ -2293,67 +2300,69 @@ app.get("/all-payouts", async (req, res) => {
 });
 
 /*---- Parcels Related APIs ----*/
-app.get("/parcels", 
+app.get(
+  "/parcels",
   verifyFireBaseToken,
   verifyMerchantToken,
   verifyOwner,
   async (req, res) => {
-  try {
-    const { email, filter, search, status } = req.query;
-    const { parcelsCollections } = await connectDB();
-    const skip = parseInt(req.query.skip) || 0;
-    const limit = parseInt(req.query.limit) || 10;
+    try {
+      const { email, filter, search, status } = req.query;
+      const { parcelsCollections } = await connectDB();
+      const skip = parseInt(req.query.skip) || 0;
+      const limit = parseInt(req.query.limit) || 10;
 
-    const cacheKey = `parcels_${email.toLowerCase()}_${filter || "all"}_${status || "all"}_${skip}_${limit}`;
-    const cachedData = parcelsCache.get(cacheKey);
-    if (cachedData) {
-      return res.send(cachedData);
+      const cacheKey = `parcels_${email.toLowerCase()}_${filter || "all"}_${status || "all"}_${skip}_${limit}`;
+      const cachedData = parcelsCache.get(cacheKey);
+      if (cachedData) {
+        return res.send(cachedData);
+      }
+
+      let startDate = new Date();
+      if (filter === "this-week") {
+        startDate.setDate(startDate.getDate() - 7);
+      } else if (filter === "last-week") {
+        startDate.setDate(startDate.getDate() - 14);
+      } else if (filter === "last-month") {
+        startDate.setMonth(startDate.getMonth() - 1);
+      } else {
+        startDate = null;
+      }
+
+      const query = { "senderInfo.email": email };
+      if (startDate) {
+        query.createdAt = { $gte: startDate.toISOString() };
+      }
+      if (req.query.status) {
+        query.deliveryStatus = req.query.status;
+      }
+      // if (search) {
+      //   query.$or = [
+      //     { trackingID: { $regex: search, $options: "i" } },
+      //     { "receiverInfo.name": { $regex: search, $options: "i" } },
+      //   ];
+      // }
+
+      const [result, count] = await Promise.all([
+        parcelsCollections
+          .find(query)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .toArray(),
+        parcelsCollections.countDocuments(query),
+      ]);
+
+      const responseData = { count, data: result };
+
+      parcelsCache.set(cacheKey, responseData);
+
+      res.send(responseData);
+    } catch (error) {
+      res.status(500).send({ message: "Internal Server Error" });
     }
-
-    let startDate = new Date();
-    if (filter === "this-week") {
-      startDate.setDate(startDate.getDate() - 7);
-    } else if (filter === "last-week") {
-      startDate.setDate(startDate.getDate() - 14);
-    } else if (filter === "last-month") {
-      startDate.setMonth(startDate.getMonth() - 1);
-    } else {
-      startDate = null;
-    }
-
-    const query = { "senderInfo.email": email };
-    if (startDate) {
-      query.createdAt = { $gte: startDate.toISOString() };
-    }
-    if (req.query.status) {
-      query.deliveryStatus = req.query.status;
-    }
-    // if (search) {
-    //   query.$or = [
-    //     { trackingID: { $regex: search, $options: "i" } },
-    //     { "receiverInfo.name": { $regex: search, $options: "i" } },
-    //   ];
-    // }
-
-    const [result, count] = await Promise.all([
-      parcelsCollections
-        .find(query)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .toArray(),
-      parcelsCollections.countDocuments(query)
-    ]);
-
-    const responseData = { count, data: result };
-
-    parcelsCache.set(cacheKey, responseData);
-
-    res.send(responseData);
-  } catch (error) {
-    res.status(500).send({ message: "Internal Server Error" });
-  }
-});
+  },
+);
 
 app.get("/parcel/:parcelID", async (req, res) => {
   try {
@@ -2369,7 +2378,7 @@ app.get("/parcel/:parcelID", async (req, res) => {
       _id: new ObjectId(req.params.parcelID),
     });
 
-    // 
+    //
     parcelDetailCache.set(cacheKey, parcel);
 
     res.send(parcel);
@@ -2378,27 +2387,33 @@ app.get("/parcel/:parcelID", async (req, res) => {
   }
 });
 
-app.get(
-  "/late-invoices/:email",
-  verifyFireBaseToken,
-  verifyMerchantToken,
-  verifyOwner,
-  async (req, res) => {
-    try {
-      const { parcelsCollections } = await connectDB();
-      const lateInvoices = await parcelsCollections
-        .find({
-          "senderInfo.email": req.params.email,
-          deliveryChargeStatus: "unpaid",
-          deliveryStatus: "delivered",
-        })
-        .toArray();
-      res.send(lateInvoices);
-    } catch (error) {
-      res.status(500).send({ message: "Failed to fetch late invoices" });
+// verifyFireBaseToken,
+// verifyMerchantToken,
+// verifyOwner,
+app.get("/late-invoices/:email", async (req, res) => {
+  try {
+    const cacheKey = `late_invoices_${req.params.email}`;
+
+    const cachedData = lateInvoicesCache.get(cacheKey);
+    if (cachedData) {
+      return res.send(cachedData);
     }
-  },
-);
+    const { parcelsCollections } = await connectDB();
+    const lateInvoices = await parcelsCollections
+      .find({
+        "senderInfo.email": req.params.email,
+        deliveryChargeStatus: "unpaid",
+        deliveryStatus: "delivered",
+      })
+      .toArray();
+
+    lateInvoicesCache.set(cacheKey, lateInvoices);
+
+    res.send(lateInvoices);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to fetch late invoices" });
+  }
+});
 
 app.get("/parcels/unpaid/:email", async (req, res) => {
   try {
