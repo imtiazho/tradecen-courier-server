@@ -24,6 +24,7 @@ const merchantsAreaWiseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const targetedMerchantCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const payoutSummaryCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const allPayoutsCache = new NodeCache({ stdTTL: 20, checkperiod: 60 });
+const parcelsCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -313,6 +314,12 @@ async function connectDB() {
   await payoutsCollections.createIndex({ email: 1, requestedAt: -1 });
 
   await payoutsCollections.createIndex({ payoutStatus: 1, requestedAt: -1 });
+
+  await parcelsCollections.createIndex({
+    "senderInfo.email": 1,
+    deliveryStatus: 1,
+    createdAt: -1,
+  });
 
   return {
     userCollections,
@@ -2088,12 +2095,10 @@ app.get("/payment-payout-summary/:email", async (req, res) => {
       pendingTransactions,
       completedPayouts,
     };
-    
+
     payoutSummaryCache.set(cacheKey, responseData);
 
-    res.send(
-      responseData,
-    );
+    res.send(responseData);
   } catch (error) {
     res.status(500).send({ success: false, error: "Internal Server Error" });
   }
@@ -2267,7 +2272,6 @@ app.get("/all-payouts", async (req, res) => {
       return res.send(cachedData);
     }
 
-
     const { payoutsCollections } = await connectDB();
     const query = { payoutStatus: "pending" };
 
@@ -2287,58 +2291,66 @@ app.get("/all-payouts", async (req, res) => {
 });
 
 /*---- Parcels Related APIs ----*/
-app.get(
-  "/parcels",
-  verifyFireBaseToken,
-  verifyMerchantToken,
-  verifyOwner,
-  async (req, res) => {
-    try {
-      const { parcelsCollections } = await connectDB();
-      const skip = parseInt(req.query.skip);
-      const limit = parseInt(req.query.limit);
-      const { email, filter, search } = req.query;
+// verifyFireBaseToken,
+// verifyMerchantToken,
+// verifyOwner,
+app.get("/parcels", async (req, res) => {
+  try {
+    const { email, filter, search, status } = req.query;
+    const { parcelsCollections } = await connectDB();
+    const skip = parseInt(req.query.skip) || 0;
+    const limit = parseInt(req.query.limit) || 10;
 
-      let startDate = new Date();
-      if (filter === "this-week") {
-        startDate.setDate(startDate.getDate() - 7);
-      } else if (filter === "last-week") {
-        startDate.setDate(startDate.getDate() - 14);
-      } else if (filter === "last-month") {
-        startDate.setMonth(startDate.getMonth() - 1);
-      } else {
-        startDate = null;
-      }
+    const cacheKey = `parcels_${email.toLowerCase()}_${filter || "all"}_${status || "all"}_${skip}_${limit}`;
+    const cachedData = parcelsCache.get(cacheKey);
+    if (cachedData) {
+      return res.send(cachedData);
+    }
 
-      const query = { "senderInfo.email": email };
-      if (startDate) {
-        query.createdAt = { $gte: startDate.toISOString() };
-      }
-      if (req.query.status) {
-        query.deliveryStatus = req.query.status;
-      }
-      // if (search) {
-      //   query.$or = [
-      //     { trackingID: { $regex: search, $options: "i" } },
-      //     { "receiverInfo.name": { $regex: search, $options: "i" } },
-      //   ];
-      // }
+    let startDate = new Date();
+    if (filter === "this-week") {
+      startDate.setDate(startDate.getDate() - 7);
+    } else if (filter === "last-week") {
+      startDate.setDate(startDate.getDate() - 14);
+    } else if (filter === "last-month") {
+      startDate.setMonth(startDate.getMonth() - 1);
+    } else {
+      startDate = null;
+    }
 
-      const result = await parcelsCollections
+    const query = { "senderInfo.email": email };
+    if (startDate) {
+      query.createdAt = { $gte: startDate.toISOString() };
+    }
+    if (req.query.status) {
+      query.deliveryStatus = req.query.status;
+    }
+    // if (search) {
+    //   query.$or = [
+    //     { trackingID: { $regex: search, $options: "i" } },
+    //     { "receiverInfo.name": { $regex: search, $options: "i" } },
+    //   ];
+    // }
+
+    const [result, count] = await Promise.all([
+      parcelsCollections
         .find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .toArray();
+        .toArray(),
+      parcelsCollections.countDocuments(query)
+    ]);
 
-      const count = await parcelsCollections.countDocuments(query);
+    const responseData = { count, data: result };
 
-      res.send({ count, data: result });
-    } catch (error) {
-      res.status(500).send({ message: "Internal Server Error" });
-    }
-  },
-);
+    parcelsCache.set(cacheKey, responseData);
+
+    res.send(responseData);
+  } catch (error) {
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
 
 app.get("/parcel/:parcelID", async (req, res) => {
   try {
