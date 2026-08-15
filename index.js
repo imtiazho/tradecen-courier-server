@@ -30,7 +30,8 @@ const parcelDetailCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const lateInvoicesCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const merchantUnpaidCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const parcelsStatusWiseCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
-const parcelStatsCache = new NodeCache({ stdTTL: 300 });
+const parcelStatsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+const revenueStatsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -2506,67 +2507,71 @@ app.get("/parcels/status/:email", async (req, res) => {
   }
 });
 
-// verifyFireBaseToken,
-// verifyMerchantToken,
-// verifyOwner,
-app.get("/parcels/stats/:email", async (req, res) => {
-  try {
-    const email = req.params.email;
-    const cacheKey = `parcel_stats_${email}`;
-    const cachedString = parcelStatsCache.get(cacheKey);
-    if (cachedString) {
-      res.setHeader("Content-Type", "application/json");
-      return res.status(200).send(cachedString);
-    }
+app.get(
+  "/parcels/stats/:email",
+  verifyFireBaseToken,
+  verifyMerchantToken,
+  verifyOwner,
+  async (req, res) => {
+    try {
+      const email = req.params.email;
+      const cacheKey = `parcel_stats_${email}`;
+      const cachedString = parcelStatsCache.get(cacheKey);
+      if (cachedString) {
+        res.setHeader("Content-Type", "application/json");
+        return res.status(200).send(cachedString);
+      }
 
-    const { parcelsCollections } = await connectDB();
-    const stats = await parcelsCollections
-      .aggregate([
-        {
-          $match: { "senderInfo.email": req.params.email },
-        },
-        {
-          $group: {
-            _id: {
-              deliveryStatus: "$deliveryStatus",
-              deliveryChargeStatus: "$deliveryChargeStatus",
-            },
-            count: { $sum: 1 },
+      const { parcelsCollections } = await connectDB();
+      const stats = await parcelsCollections
+        .aggregate([
+          {
+            $match: { "senderInfo.email": req.params.email },
           },
-        },
-      ])
-      .toArray();
+          {
+            $group: {
+              _id: {
+                deliveryStatus: "$deliveryStatus",
+                deliveryChargeStatus: "$deliveryChargeStatus",
+              },
+              count: { $sum: 1 },
+            },
+          },
+        ])
+        .toArray();
 
-    const formattedData = {
-      toPay: 0,
-      readyPickUp: 0,
-      inTransit: 0,
-      readyDeliver: 0,
-      delivered: 0,
-    };
+      const formattedData = {
+        toPay: 0,
+        readyPickUp: 0,
+        inTransit: 0,
+        readyDeliver: 0,
+        delivered: 0,
+      };
 
-    stats.forEach((element) => {
-      if (element._id.deliveryChargeStatus === "unpaid")
-        formattedData.toPay += element.count;
-      if (element._id.deliveryStatus === "assign-pickup-rider")
-        formattedData.readyPickUp += element.count;
-      if (element._id.deliveryStatus === "in-transit")
-        formattedData.inTransit += element.count;
-      if (element._id.deliveryStatus === "assign-delivery-rider")
-        formattedData.readyDeliver += element.count;
-      if (element._id.deliveryStatus === "delivered")
-        formattedData.delivered += element.count;
-    });
+      stats.forEach((element) => {
+        if (element._id.deliveryChargeStatus === "unpaid")
+          formattedData.toPay += element.count;
+        if (element._id.deliveryStatus === "assign-pickup-rider")
+          formattedData.readyPickUp += element.count;
+        if (element._id.deliveryStatus === "in-transit")
+          formattedData.inTransit += element.count;
+        if (element._id.deliveryStatus === "assign-delivery-rider")
+          formattedData.readyDeliver += element.count;
+        if (element._id.deliveryStatus === "delivered")
+          formattedData.delivered += element.count;
+      });
 
-    const jsonString = JSON.stringify(formattedData);
-    parcelStatsCache.set(cacheKey, jsonString);
-    res.setHeader("Content-Type", "application/json");
-    res.status(200).send(jsonString);
-  } catch (error) {
-    res.status(500).send({ message: "Internal Server Error" });
-  }
-});
+      const jsonString = JSON.stringify(formattedData);
+      parcelStatsCache.set(cacheKey, jsonString);
+      res.setHeader("Content-Type", "application/json");
+      res.status(200).send(jsonString);
+    } catch (error) {
+      res.status(500).send({ message: "Internal Server Error" });
+    }
+  },
+);
 
+const pendingRequests = new Map();
 app.get(
   "/revenue/stats/:email",
   verifyFireBaseToken,
@@ -2574,9 +2579,17 @@ app.get(
   verifyOwner,
   async (req, res) => {
     try {
-      const { parcelsCollections } = await connectDB();
+      const email = req.params.email;
       const { filter } = req.query;
 
+      const cacheKey = `parcel_rev_stats_${email}_${filter}`;
+      const cachedString = revenueStatsCache.get(cacheKey);
+      if (cachedString) {
+        res.setHeader("Content-Type", "application/json");
+        return res.status(200).send(cachedString);
+      }
+
+      const { parcelsCollections } = await connectDB();
       let startDate = new Date();
 
       if (filter === "this-week") {
@@ -2618,7 +2631,11 @@ app.get(
         value: element.totalRevenue,
       }));
 
-      res.send(chartData);
+      const jsonString = JSON.stringify(chartData);
+      revenueStatsCache.set(cacheKey, jsonString);
+
+      res.setHeader("Content-Type", "application/json");
+      res.status(200).send(jsonString);
     } catch (error) {
       res.status(500).send({ message: "Internal Server Error" });
     }
@@ -3457,4 +3474,3 @@ connectDB()
   .catch((err) => {
     console.error("❌ DB connection failed:", err);
   });
-
