@@ -1,3 +1,4 @@
+process.env.UV_THREADPOOL_SIZE = 128;
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
@@ -28,6 +29,8 @@ const parcelsCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const parcelDetailCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const lateInvoicesCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const merchantUnpaidCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
+const parcelsStatusWiseCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
+const parcelStatsCache = new NodeCache({ stdTTL: 300 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -2442,21 +2445,10 @@ app.get("/parcels/unpaid/:email", async (req, res) => {
     };
 
     const unpaidParcels = await parcelsCollections
-      .find(
-        {
-          "senderInfo.email": email,
-          deliveryChargeStatus: "unpaid",
-        },
-        {
-          projection: {
-            trackingID: 1,
-            parcelName: 1,
-            deliveryCharge: 1,
-            deliveryStatus: 1,
-            createdAt: 1,
-          },
-        }
-      )
+      .find({
+        "senderInfo.email": email,
+        deliveryChargeStatus: "unpaid",
+      })
       .sort({ createdAt: -1 })
       .toArray();
 
@@ -2477,7 +2469,6 @@ app.get("/parcels/unpaid/:email", async (req, res) => {
 
     res.setHeader("Content-Type", "application/json");
     res.send(jsonString);
-
   } catch (error) {
     console.error("Error fetching unpaid parcels:", error);
     res.status(500).send({ success: false, message: "Internal Server Error" });
@@ -2486,10 +2477,16 @@ app.get("/parcels/unpaid/:email", async (req, res) => {
 
 app.get("/parcels/status/:email", async (req, res) => {
   try {
-    const { parcelsCollections } = await connectDB();
     const email = req.params.email;
     const status = req.query.status;
+    const cacheKey = `parcels_status_${email}_${status || "all"}`;
+    const cachedString = parcelsStatusWiseCache.get(cacheKey);
+    if (cachedString) {
+      res.setHeader("Content-Type", "application/json");
+      return res.status(200).send(cachedString);
+    }
 
+    const { parcelsCollections } = await connectDB();
     let query = { "senderInfo.email": email };
 
     if (status) {
@@ -2498,65 +2495,77 @@ app.get("/parcels/status/:email", async (req, res) => {
 
     const result = await parcelsCollections.find(query).toArray();
 
-    res.send(result);
+    const jsonString = JSON.stringify(result);
+    parcelsStatusWiseCache.set(cacheKey, jsonString);
+
+    res.setHeader("Content-Type", "application/json");
+    res.status(200).send(jsonString);
   } catch (error) {
     console.error("Error loading filtered parcels:", error);
     res.status(500).send({ message: "Internal Server Error" });
   }
 });
 
-app.get(
-  "/parcels/stats/:email",
-  verifyFireBaseToken,
-  verifyMerchantToken,
-  verifyOwner,
-  async (req, res) => {
-    try {
-      const { parcelsCollections } = await connectDB();
-      const stats = await parcelsCollections
-        .aggregate([
-          {
-            $match: { "senderInfo.email": req.params.email },
-          },
-          {
-            $group: {
-              _id: {
-                deliveryStatus: "$deliveryStatus",
-                deliveryChargeStatus: "$deliveryChargeStatus",
-              },
-              count: { $sum: 1 },
-            },
-          },
-        ])
-        .toArray();
-
-      const formattedData = {
-        toPay: 0,
-        readyPickUp: 0,
-        inTransit: 0,
-        readyDeliver: 0,
-        delivered: 0,
-      };
-
-      stats.forEach((element) => {
-        if (element._id.deliveryChargeStatus === "unpaid")
-          formattedData.toPay += element.count;
-        if (element._id.deliveryStatus === "assign-pickup-rider")
-          formattedData.readyPickUp += element.count;
-        if (element._id.deliveryStatus === "in-transit")
-          formattedData.inTransit += element.count;
-        if (element._id.deliveryStatus === "assign-delivery-rider")
-          formattedData.readyDeliver += element.count;
-        if (element._id.deliveryStatus === "delivered")
-          formattedData.delivered += element.count;
-      });
-
-      res.send(formattedData);
-    } catch (error) {
-      res.status(500).send({ message: "Internal Server Error" });
+// verifyFireBaseToken,
+// verifyMerchantToken,
+// verifyOwner,
+app.get("/parcels/stats/:email", async (req, res) => {
+  try {
+    const email = req.params.email;
+    const cacheKey = `parcel_stats_${email}`;
+    const cachedString = parcelStatsCache.get(cacheKey);
+    if (cachedString) {
+      res.setHeader("Content-Type", "application/json");
+      return res.status(200).send(cachedString);
     }
-  },
-);
+
+    const { parcelsCollections } = await connectDB();
+    const stats = await parcelsCollections
+      .aggregate([
+        {
+          $match: { "senderInfo.email": req.params.email },
+        },
+        {
+          $group: {
+            _id: {
+              deliveryStatus: "$deliveryStatus",
+              deliveryChargeStatus: "$deliveryChargeStatus",
+            },
+            count: { $sum: 1 },
+          },
+        },
+      ])
+      .toArray();
+
+    const formattedData = {
+      toPay: 0,
+      readyPickUp: 0,
+      inTransit: 0,
+      readyDeliver: 0,
+      delivered: 0,
+    };
+
+    stats.forEach((element) => {
+      if (element._id.deliveryChargeStatus === "unpaid")
+        formattedData.toPay += element.count;
+      if (element._id.deliveryStatus === "assign-pickup-rider")
+        formattedData.readyPickUp += element.count;
+      if (element._id.deliveryStatus === "in-transit")
+        formattedData.inTransit += element.count;
+      if (element._id.deliveryStatus === "assign-delivery-rider")
+        formattedData.readyDeliver += element.count;
+      if (element._id.deliveryStatus === "delivered")
+        formattedData.delivered += element.count;
+    });
+
+    const jsonString = JSON.stringify(formattedData);
+    parcelStatsCache.set(cacheKey, jsonString);
+    res.setHeader("Content-Type", "application/json");
+    res.status(200).send(jsonString);
+  } catch (error) {
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
 
 app.get(
   "/revenue/stats/:email",
@@ -3438,10 +3447,14 @@ connectDB()
   .then(() => {
     console.log("🚀 MongoDB Connected");
 
-    app.listen(port, () => {
+    const server = app.listen(port, () => {
       console.log(`Server running on port ${port}`);
     });
+
+    server.keepAliveTimeout = 65000;
+    server.headersTimeout = 66000;
   })
   .catch((err) => {
     console.error("❌ DB connection failed:", err);
   });
+
