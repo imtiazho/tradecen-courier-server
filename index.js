@@ -32,6 +32,7 @@ const merchantUnpaidCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const parcelsStatusWiseCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const parcelStatsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const revenueStatsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+const hubHandCashCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -340,6 +341,12 @@ async function connectDB() {
     deliveryChargeStatus: 1,
     createdAt: -1,
   });
+
+  // await parcelsCollections.createIndex({
+  //   "serviceCenters.destination": 1,
+  //   deliveryStatus: 1,
+  //   isDepositedToHQ: 1,
+  // });
 
   return {
     userCollections,
@@ -2655,9 +2662,10 @@ app.get(
 
       res.status(500).send({ message: "Internal Server Error" });
     }
-  }
+  },
 );
 
+// Another sample
 // app.get(
 //   "/revenue/stats/:email",
 //   verifyFireBaseToken,
@@ -2751,7 +2759,7 @@ app.get("/tracking/:id", async (req, res) => {
     if (cachedData) {
       return res.status(200).send({
         success: true,
-        source: "cache", // বোঝার সুবিধার্থে (ইচ্ছা হলে বাদ দিতে পারেন)
+        source: "cache",
         result: cachedData,
       });
     }
@@ -2941,54 +2949,81 @@ app.patch(
   },
 );
 
-app.get(
-  "/hub-hand-cash/:hubName",
-  verifyFireBaseToken,
-  verifyHubManagerToken,
-  async (req, res) => {
-    try {
-      const { hubName } = req.params;
-      const { parcelsCollections } = await connectDB();
+// verifyFireBaseToken,
+// verifyHubManagerToken,
 
-      const parcels = await parcelsCollections
-        .find({
-          "serviceCenters.destination": hubName,
-          deliveryStatus: "delivered",
-          isDepositedToHQ: false,
-        })
-        .toArray();
+const pendingHubRequests = new Map();
+app.get("/hub-hand-cash/:hubName", async (req, res) => {
+  try {
+    const { hubName } = req.params;
+    const cacheKey = `hub_hand_cash_${hubName}`;
 
-      let totalHandCash = 0;
-      const totalParcelCount = parcels.length;
-
-      parcels.forEach((parcel) => {
-        const isPayoutPending = [false, "pending"].includes(
-          parcel.merchantRevenueStatus,
-        );
-
-        if (isPayoutPending) {
-          totalHandCash += parcel.codAmount || 0;
-        } else if (!parcel.deliveryChargeOnlinePaymentStatus) {
-          totalHandCash += parcel.deliveryCharge || 0;
-        }
-      });
-
-      res.send({
-        success: true,
-        parcels,
-        hubName,
-        totalParcelCount,
-        totalHandCash,
-      });
-    } catch (error) {
-      res.status(500).send({
-        success: false,
-        message: "Internal Server Error",
-        error: error.message,
-      });
+    const cachedString = hubHandCashCache.get(cacheKey);
+    if (cachedString) {
+      res.setHeader("Content-Type", "application/json");
+      return res.status(200).send(cachedString);
     }
-  },
-);
+
+    if (!pendingHubRequests.has(cacheKey)) {
+      const fetchPromise = (async () => {
+        const { parcelsCollections } = await connectDB();
+
+        const parcels = await parcelsCollections
+          .find({
+            "serviceCenters.destination": hubName,
+            deliveryStatus: "delivered",
+            isDepositedToHQ: false,
+          })
+          .toArray();
+
+        let totalHandCash = 0;
+        const totalParcelCount = parcels.length;
+
+        parcels.forEach((parcel) => {
+          const isPayoutPending = [false, "pending"].includes(
+            parcel.merchantRevenueStatus,
+          );
+
+          if (isPayoutPending) {
+            totalHandCash += parcel.codAmount || 0;
+          } else if (!parcel.deliveryChargeOnlinePaymentStatus) {
+            totalHandCash += parcel.deliveryCharge || 0;
+          }
+        });
+
+        const responseData = {
+          success: true,
+          parcels,
+          hubName,
+          totalParcelCount,
+          totalHandCash,
+        };
+
+        const jsonString = JSON.stringify(responseData);
+        hubHandCashCache.set(cacheKey, jsonString);
+        return jsonString;
+      })();
+
+      pendingHubRequests.set(cacheKey, fetchPromise);
+    }
+
+    const jsonString = await pendingHubRequests.get(cacheKey);
+
+    pendingHubRequests.delete(cacheKey);
+
+    res.setHeader("Content-Type", "application/json");
+    res.status(200).send(jsonString);
+  } catch (error) {
+    const { hubName } = req.params;
+    pendingHubRequests.delete(`hub_hand_cash_${hubName}`);
+
+    res.status(500).send({
+      success: false,
+      message: "Internal Server Error",
+      error: error.message,
+    });
+  }
+});
 
 app.get(
   "/hub-profit-metrics/:hubName",
