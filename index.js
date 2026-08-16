@@ -34,6 +34,7 @@ const parcelStatsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const revenueStatsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const hubHandCashCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const hubProfitCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+const hubAgingCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -343,11 +344,11 @@ async function connectDB() {
     createdAt: -1,
   });
 
-  // await parcelsCollections.createIndex({
-  //   "serviceCenters.destination": 1,
-  //   deliveryStatus: 1,
-  //   isDepositedToHQ: 1,
-  // });
+  await parcelsCollections.createIndex({
+    "serviceCenters.destination": 1,
+    deliveryStatus: 1,
+    isDepositedToHQ: 1,
+  });
 
   return {
     userCollections,
@@ -3026,11 +3027,11 @@ app.get("/hub-hand-cash/:hubName", async (req, res) => {
   }
 });
 
-// verifyFireBaseToken,
-// verifyHubManagerToken,
 const pendingHubProfitRequests = new Map();
 app.get(
   "/hub-profit-metrics/:hubName",
+  verifyFireBaseToken,
+  verifyHubManagerToken,
   async (req, res) => {
     try {
       const { hubName } = req.params;
@@ -3097,50 +3098,82 @@ app.get(
   },
 );
 
+const pendingHubAgingRequests = new Map();
 app.get(
   "/hub-aging-status/:hubName",
   verifyFireBaseToken,
   verifyHubManagerToken,
   async (req, res) => {
     try {
-      const { parcelsCollections } = await connectDB();
       const { hubName } = req.params;
-      const activeParcels = await parcelsCollections
-        .find({
-          $or: [
-            { "serviceCenters.origin": hubName },
-            { "serviceCenters.destination": hubName },
-          ],
+      const cacheKey = `hub_aging_status_${hubName}`;
 
-          deliveryStatus: {
-            $in: ["reached-origin-warehouse", "reached-destination-warehouse"],
-          },
-        })
-        .toArray();
+      const cachedString = hubAgingCache.get(cacheKey);
+      if (cachedString) {
+        res.setHeader("Content-Type", "application/json");
+        return res.status(200).send(cachedString);
+      }
 
-      let age24H = 0;
-      let age48H = 0;
-      let age72HPlus = 0;
+      if (!pendingHubAgingRequests.has(cacheKey)) {
+        const fetchPromise = (async () => {
+          const { parcelsCollections } = await connectDB();
 
-      const now = new Date();
+          const activeParcels = await parcelsCollections
+            .find({
+              $or: [
+                { "serviceCenters.origin": hubName },
+                { "serviceCenters.destination": hubName },
+              ],
+              deliveryStatus: {
+                $in: [
+                  "reached-origin-warehouse",
+                  "reached-destination-warehouse",
+                ],
+              },
+            })
+            .toArray();
 
-      activeParcels.forEach((parcel) => {
-        if (parcel.createdAt) {
-          const createdTime = new Date(parcel.createdAt);
-          const diffInHours = (now - createdTime) / (1000 * 60 * 60);
+          let age24H = 0;
+          let age48H = 0;
+          let age72HPlus = 0;
 
-          if (diffInHours <= 24) {
-            age24H++;
-          } else if (diffInHours > 24 && diffInHours <= 48) {
-            age48H++;
-          } else {
-            age72HPlus++;
-          }
-        }
-      });
+          const now = new Date();
 
-      res.send({ age24H, age48H, age72HPlus });
+          activeParcels.forEach((parcel) => {
+            if (parcel.createdAt) {
+              const createdTime = new Date(parcel.createdAt);
+              const diffInHours = (now - createdTime) / (1000 * 60 * 60);
+
+              if (diffInHours <= 24) {
+                age24H++;
+              } else if (diffInHours > 24 && diffInHours <= 48) {
+                age48H++;
+              } else {
+                age72HPlus++;
+              }
+            }
+          });
+
+          const responseData = { age24H, age48H, age72HPlus };
+
+          const jsonString = JSON.stringify(responseData);
+          hubAgingCache.set(cacheKey, jsonString);
+          return jsonString;
+        })();
+
+        pendingHubAgingRequests.set(cacheKey, fetchPromise);
+      }
+
+      const jsonString = await pendingHubAgingRequests.get(cacheKey);
+
+      pendingHubAgingRequests.delete(cacheKey);
+
+      res.setHeader("Content-Type", "application/json");
+      res.status(200).send(jsonString);
     } catch (error) {
+      const { hubName } = req.params;
+      pendingHubAgingRequests.delete(`hub_aging_status_${hubName}`);
+
       res
         .status(500)
         .send({ success: false, message: "Internal Server Error" });
