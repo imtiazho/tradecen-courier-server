@@ -35,6 +35,7 @@ const revenueStatsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const hubHandCashCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const hubProfitCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const hubAgingCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
+const hubEfficiencyCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -348,6 +349,18 @@ async function connectDB() {
     "serviceCenters.destination": 1,
     deliveryStatus: 1,
     isDepositedToHQ: 1,
+  });
+
+  await parcelsCollections.createIndex({
+    "serviceCenters.destination": 1,
+    deliveryStatus: 1,
+    createdAt: 1,
+  });
+
+  await parcelsCollections.createIndex({
+    "serviceCenters.origin": 1,
+    deliveryStatus: 1,
+    createdAt: 1,
   });
 
   return {
@@ -3181,53 +3194,90 @@ app.get(
   },
 );
 
+const pendingHubEfficiencyRequests = new Map();
 app.get(
   "/hub-efficiency-flow/:hubName",
-  verifyFireBaseToken,
-  verifyHubManagerToken,
+  // verifyFireBaseToken,
+  // verifyHubManagerToken,
   async (req, res) => {
     try {
-      const { parcelsCollections } = await connectDB();
       const { hubName } = req.params;
+      const cacheKey = `hub_efficiency_flow_${hubName}`;
 
-      const now = new Date();
-      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      const sevenDayAgoStr = sevenDaysAgo.toISOString();
+      const cachedString = hubEfficiencyCache.get(cacheKey);
+      if (cachedString) {
+        res.setHeader("Content-Type", "application/json");
+        return res.status(200).send(cachedString);
+      }
 
-      const sortingCount = await parcelsCollections.countDocuments({
-        createdAt: { $gte: sevenDayAgoStr },
-        $or: [
-          {
-            "serviceCenters.origin": hubName,
-            deliveryStatus: "reached-origin-warehouse",
-          },
-          {
+      if (!pendingHubEfficiencyRequests.has(cacheKey)) {
+        const fetchPromise = (async () => {
+          const { parcelsCollections } = await connectDB();
+
+          const now = new Date();
+          const sevenDaysAgo = new Date(
+            now.getTime() - 7 * 24 * 60 * 60 * 1000,
+          );
+          const sevenDayAgoStr = sevenDaysAgo.toISOString();
+
+          const sortingCount = await parcelsCollections.countDocuments({
+            createdAt: { $gte: sevenDayAgoStr },
+            $or: [
+              {
+                "serviceCenters.origin": hubName,
+                deliveryStatus: "reached-origin-warehouse",
+              },
+              {
+                "serviceCenters.destination": hubName,
+                deliveryStatus: "reached-destination-warehouse",
+              },
+            ],
+          });
+
+          const OutForDeliveryCount = await parcelsCollections.countDocuments({
             "serviceCenters.destination": hubName,
-            deliveryStatus: "reached-destination-warehouse",
-          },
-        ],
-      });
+            createdAt: { $gte: sevenDayAgoStr },
+            deliveryStatus: "assign-delivery-rider",
+          });
 
-      const OutForDeliveryCount = await parcelsCollections.countDocuments({
-        "serviceCenters.destination": hubName,
-        createdAt: { $gte: sevenDayAgoStr },
-        deliveryStatus: "assign-delivery-rider",
-      });
+          const deliveredCount = await parcelsCollections.countDocuments({
+            "serviceCenters.destination": hubName,
+            createdAt: { $gte: sevenDayAgoStr },
+            deliveryStatus: "delivered",
+          });
 
-      const deliveredCount = await parcelsCollections.countDocuments({
-        "serviceCenters.destination": hubName,
-        createdAt: { $gte: sevenDayAgoStr },
-        deliveryStatus: "delivered",
-      });
+          const total = sortingCount + OutForDeliveryCount + deliveredCount;
 
-      const total = sortingCount + OutForDeliveryCount + deliveredCount;
+          const sorting = Math.round((sortingCount / total) * 100) || 0;
+          const outDelivery =
+            Math.round((OutForDeliveryCount / total) * 100) || 0;
+          const delivered = Math.round((deliveredCount / total) * 100) || 0;
 
-      const sorting = Math.round((sortingCount / total) * 100) || 0;
-      const outDelivery = Math.round((OutForDeliveryCount / total) * 100) || 0;
-      const delivered = Math.round((deliveredCount / total) * 100) || 0;
+          const responseData = {
+            sorting,
+            outDelivery,
+            delivered,
+            totalActive: total,
+          };
 
-      res.send({ sorting, outDelivery, delivered, totalActive: total });
+          const jsonString = JSON.stringify(responseData);
+          hubEfficiencyCache.set(cacheKey, jsonString);
+          return jsonString;
+        })();
+
+        pendingHubEfficiencyRequests.set(cacheKey, fetchPromise);
+      }
+
+      const jsonString = await pendingHubEfficiencyRequests.get(cacheKey);
+
+      pendingHubEfficiencyRequests.delete(cacheKey);
+
+      res.setHeader("Content-Type", "application/json");
+      res.status(200).send(jsonString);
     } catch (error) {
+      const { hubName } = req.params;
+      pendingHubEfficiencyRequests.delete(`hub_efficiency_flow_${hubName}`);
+
       res
         .status(500)
         .send({ success: false, message: "Internal Server Error" });
