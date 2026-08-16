@@ -36,6 +36,7 @@ const hubHandCashCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const hubProfitCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const hubAgingCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
 const hubEfficiencyCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
+const depositHistoryCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -361,6 +362,12 @@ async function connectDB() {
     "serviceCenters.origin": 1,
     deliveryStatus: 1,
     createdAt: 1,
+  });
+
+  await hqPaymentsCollections.createIndex({
+    hubName: 1,
+    status: 1,
+    createdAt: -1,
   });
 
   return {
@@ -3197,8 +3204,8 @@ app.get(
 const pendingHubEfficiencyRequests = new Map();
 app.get(
   "/hub-efficiency-flow/:hubName",
-  // verifyFireBaseToken,
-  // verifyHubManagerToken,
+  verifyFireBaseToken,
+  verifyHubManagerToken,
   async (req, res) => {
     try {
       const { hubName } = req.params;
@@ -3349,37 +3356,68 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
   }
 });
 
+const pendingDepositHistoryRequests = new Map();
+// verifyFireBaseToken,
+// verifyRoles("hub-manager", "admin"),
 app.get(
   "/hub-deposit-history",
-  verifyFireBaseToken,
-  verifyRoles("hub-manager", "admin"),
   async (req, res) => {
     try {
       const { hubName, status } = req.query;
-      const { hqPaymentsCollections } = await connectDB();
 
-      const query = {};
+      const cacheKey = `hub_deposit_history_${hubName || "all"}_${status || "all"}`;
 
-      if (hubName) {
-        query.hubName = hubName;
+      const cachedString = depositHistoryCache.get(cacheKey);
+      if (cachedString) {
+        res.setHeader("Content-Type", "application/json");
+        return res.status(200).send(cachedString);
       }
 
-      if (status) {
-        query.status = status;
+      if (!pendingDepositHistoryRequests.has(cacheKey)) {
+        const fetchPromise = (async () => {
+          const { hqPaymentsCollections } = await connectDB();
+
+          const query = {};
+
+          if (hubName) {
+            query.hubName = hubName;
+          }
+
+          if (status) {
+            query.status = status;
+          }
+
+          const depositHistory = await hqPaymentsCollections
+            .find(query)
+            .sort({ createdAt: -1 })
+            .toArray();
+
+          const responseData = {
+            success: true,
+            hubName,
+            totalDeposits: depositHistory.length,
+            history: depositHistory,
+          };
+
+          const jsonString = JSON.stringify(responseData);
+          depositHistoryCache.set(cacheKey, jsonString);
+          return jsonString;
+        })();
+
+        pendingDepositHistoryRequests.set(cacheKey, fetchPromise);
       }
 
-      const depositHistory = await hqPaymentsCollections
-        .find(query)
-        .sort({ createdAt: -1 })
-        .toArray();
+      const jsonString = await pendingDepositHistoryRequests.get(cacheKey);
 
-      res.send({
-        success: true,
-        hubName,
-        totalDeposits: depositHistory.length,
-        history: depositHistory,
-      });
+      pendingDepositHistoryRequests.delete(cacheKey);
+
+      res.setHeader("Content-Type", "application/json");
+      res.status(200).send(jsonString);
     } catch (error) {
+      const { hubName, status } = req.query;
+      pendingDepositHistoryRequests.delete(
+        `hub_deposit_history_${hubName || "all"}_${status || "all"}`,
+      );
       res
         .status(500)
         .send({ success: false, message: "Internal Server Error" });
