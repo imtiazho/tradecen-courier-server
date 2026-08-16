@@ -37,6 +37,7 @@ const hubProfitCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const hubAgingCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
 const hubEfficiencyCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
 const depositHistoryCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
+const mainDashboardCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -369,6 +370,11 @@ async function connectDB() {
     status: 1,
     createdAt: -1,
   });
+
+await parcelsCollections.createIndex({ deliveryStatus: 1 });
+await parcelsCollections.createIndex({ status: 1, revMethod: 1, isDepositedToHQ: 1 });
+await parcelsCollections.createIndex({ createdAt: -1 });
+await ridersCollections.createIndex({ currentTasks: 1 });
 
   return {
     userCollections,
@@ -3357,10 +3363,10 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
 });
 
 const pendingDepositHistoryRequests = new Map();
-// verifyFireBaseToken,
-// verifyRoles("hub-manager", "admin"),
 app.get(
   "/hub-deposit-history",
+  verifyFireBaseToken,
+  verifyRoles("hub-manager", "admin"),
   async (req, res) => {
     try {
       const { hubName, status } = req.query;
@@ -3459,109 +3465,159 @@ app.patch(
 );
 
 /* ---- Master Admin ---- */
+
+const pendingDashboardRequests = new Map();
+// verifyFireBaseToken,
+// verifyAdminToken,
 app.get(
   "/master-admin/main-dashboard",
-  verifyFireBaseToken,
-  verifyAdminToken,
   async (req, res) => {
     try {
-      const { parcelsCollections, merchantsCollections, ridersCollections } =
-        await connectDB();
-      const revenueResult = await parcelsCollections
-        .aggregate([
-          {
-            $match: {
-              deliveryStatus: "delivered",
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              total: { $sum: "$deliveryCharge" },
-            },
-          },
-        ])
-        .toArray();
-      const totalRevenue =
-        revenueResult.length > 0 ? revenueResult[0].total : 0;
-      const totalParcels = await parcelsCollections.estimatedDocumentCount();
-      const totalMerchants =
-        await merchantsCollections.estimatedDocumentCount();
-      const activeRiders = await ridersCollections.countDocuments({
-        currentTasks: { $gt: 0 },
-      });
-      const pendingPickUpAndDeliveryCount =
-        await parcelsCollections.countDocuments({
-          deliveryStatus: {
-            $in: ["assign-pickup-rider", "assign-delivery-rider"],
-          },
-        });
-      const inTransitAndPickedCount = await parcelsCollections.countDocuments({
-        deliveryStatus: {
-          $in: ["rider-carrying", "in-transit"],
-        },
-      });
-      const dispatchCount = await parcelsCollections.countDocuments({
-        deliveryStatus: "delivered",
-      });
+      const cacheKey = "master_admin_main_dashboard";
 
-      const transitLiquidityResult = await parcelsCollections
-        .aggregate([
-          {
-            $match: {
-              status: "delivered",
-              revMethod: "COD",
-              isDepositedToHQ: false,
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              totalTransitCash: { $sum: "$codAmount" },
-            },
-          },
-        ])
-        .toArray();
-      const codInTransit =
-        transitLiquidityResult.length > 0
-          ? transitLiquidityResult[0].totalTransitCash
-          : 0;
+      // 🟢 ১. Fast Cache Hit (Pre-serialized JSON)
+      const cachedString = mainDashboardCache.get(cacheKey);
+      if (cachedString) {
+        res.setHeader("Content-Type", "application/json");
+        return res.status(200).send(cachedString);
+      }
 
-      const recentParcels = await parcelsCollections
-        .find({})
-        .sort({ createdAt: -1 })
-        .limit(3)
-        .project({
-          trackingID: 1,
-          "senderInfo.name": 1,
-          "receiverInfo.name": 1,
-          deliveryStatus: 1,
-          codAmount: 1,
-        })
-        .toArray();
+      // 🟢 ২. Single-Flight Block (Cache Stampede & High DB Load Prevention)
+      if (!pendingDashboardRequests.has(cacheKey)) {
+        const fetchPromise = (async () => {
+          const { parcelsCollections, merchantsCollections, ridersCollections } =
+            await connectDB();
 
-      res.status(200).send({
-        success: true,
-        metrics: {
-          totalRevenue,
-          totalParcels,
-          totalMerchants,
-          activeRiders,
-          codInTransit,
-        },
-        pipeline: {
-          pendingPickUpAndDeliveryCount,
-          inTransitAndPickedCount,
-          dispatchCount,
-        },
-        recentParcels,
-      });
+          // 🎯 আপনার অরিজিনাল 1. Revenue Aggregation
+          const revenueResult = await parcelsCollections
+            .aggregate([
+              {
+                $match: {
+                  deliveryStatus: "delivered",
+                },
+              },
+              {
+                $group: {
+                  _id: null,
+                  total: { $sum: "$deliveryCharge" },
+                },
+              },
+            ])
+            .toArray();
+
+          const totalRevenue =
+            revenueResult.length > 0 ? revenueResult[0].total : 0;
+
+          // 🎯 আপনার অরিজিনাল Estimated Document Counts
+          const totalParcels = await parcelsCollections.estimatedDocumentCount();
+          const totalMerchants =
+            await merchantsCollections.estimatedDocumentCount();
+
+          // 🎯 আপনার অরিজিনাল Rider Count
+          const activeRiders = await ridersCollections.countDocuments({
+            currentTasks: { $gt: 0 },
+          });
+
+          // 🎯 আপনার অরিজিনাল Pipeline Counts
+          const pendingPickUpAndDeliveryCount =
+            await parcelsCollections.countDocuments({
+              deliveryStatus: {
+                $in: ["assign-pickup-rider", "assign-delivery-rider"],
+              },
+            });
+
+          const inTransitAndPickedCount = await parcelsCollections.countDocuments({
+            deliveryStatus: {
+              $in: ["rider-carrying", "in-transit"],
+            },
+          });
+
+          const dispatchCount = await parcelsCollections.countDocuments({
+            deliveryStatus: "delivered",
+          });
+
+          // 🎯 আপনার অরিজিনাল 2. Transit Liquidity Aggregation
+          const transitLiquidityResult = await parcelsCollections
+            .aggregate([
+              {
+                $match: {
+                  status: "delivered",
+                  revMethod: "COD",
+                  isDepositedToHQ: false,
+                },
+              },
+              {
+                $group: {
+                  _id: null,
+                  totalTransitCash: { $sum: "$codAmount" },
+                },
+              },
+            ])
+            .toArray();
+
+          const codInTransit =
+            transitLiquidityResult.length > 0
+              ? transitLiquidityResult[0].totalTransitCash
+              : 0;
+
+          // 🎯 আপনার অরিজিনাল Recent Parcels Query
+          const recentParcels = await parcelsCollections
+            .find({})
+            .sort({ createdAt: -1 })
+            .limit(3)
+            .project({
+              trackingID: 1,
+              "senderInfo.name": 1,
+              "receiverInfo.name": 1,
+              deliveryStatus: 1,
+              codAmount: 1,
+            })
+            .toArray();
+
+          // 🎯 আপনার অরিজিনাল Response Object
+          const responseData = {
+            success: true,
+            metrics: {
+              totalRevenue,
+              totalParcels,
+              totalMerchants,
+              activeRiders,
+              codInTransit,
+            },
+            pipeline: {
+              pendingPickUpAndDeliveryCount,
+              inTransitAndPickedCount,
+              dispatchCount,
+            },
+            recentParcels,
+          };
+
+          const jsonString = JSON.stringify(responseData);
+          mainDashboardCache.set(cacheKey, jsonString);
+          return jsonString;
+        })();
+
+        // প্রমিজটি ম্যাপে সেভ করে লক করা হলো
+        pendingDashboardRequests.set(cacheKey, fetchPromise);
+      }
+
+      // 🟢 ৩. ১ম রিকোয়েস্টের প্রমিজ থেকে শেয়ার্ড রেজাল্ট গ্রহণ
+      const jsonString = await pendingDashboardRequests.get(cacheKey);
+
+      // মেমোরি ক্লিয়ার / লক রিলিজ
+      pendingDashboardRequests.delete(cacheKey);
+
+      res.setHeader("Content-Type", "application/json");
+      res.status(200).send(jsonString);
     } catch (error) {
+      pendingDashboardRequests.delete("master_admin_main_dashboard");
+
+      console.error("Main Dashboard Error:", error);
       res
         .status(500)
         .send({ success: false, message: "Internal Server Error" });
     }
-  },
+  }
 );
 
 // Health check
