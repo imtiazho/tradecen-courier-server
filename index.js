@@ -33,6 +33,7 @@ const parcelsStatusWiseCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const parcelStatsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const revenueStatsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const hubHandCashCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+const hubProfitCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -3025,40 +3026,69 @@ app.get("/hub-hand-cash/:hubName", async (req, res) => {
   }
 });
 
+// verifyFireBaseToken,
+// verifyHubManagerToken,
+const pendingHubProfitRequests = new Map();
 app.get(
   "/hub-profit-metrics/:hubName",
-  verifyFireBaseToken,
-  verifyHubManagerToken,
   async (req, res) => {
     try {
       const { hubName } = req.params;
-      const { parcelsCollections } = await connectDB();
+      const cacheKey = `hub_profit_metrics_${hubName}`;
 
-      const parcels = await parcelsCollections
-        .find({
-          "serviceCenters.destination": hubName,
-          deliveryStatus: "delivered",
-          isDepositedToHQ: false,
-        })
-        .toArray();
+      const cachedString = hubProfitCache.get(cacheKey);
+      if (cachedString) {
+        res.setHeader("Content-Type", "application/json");
+        return res.status(200).send(cachedString);
+      }
 
-      let hqPayableProfit = 0;
-      let payableParcelCount = 0;
+      if (!pendingHubProfitRequests.has(cacheKey)) {
+        const fetchPromise = (async () => {
+          const { parcelsCollections } = await connectDB();
 
-      parcels.forEach((parcel) => {
-        if (!parcel.deliveryChargeOnlinePaymentStatus) {
-          hqPayableProfit += parcel.deliveryCharge || 0;
-          payableParcelCount += 1;
-        }
-      });
+          const parcels = await parcelsCollections
+            .find({
+              "serviceCenters.destination": hubName,
+              deliveryStatus: "delivered",
+              isDepositedToHQ: false,
+            })
+            .toArray();
 
-      res.send({
-        success: true,
-        hubName,
-        totalParcelCount: payableParcelCount,
-        hqPayableProfit,
-      });
+          let hqPayableProfit = 0;
+          let payableParcelCount = 0;
+
+          parcels.forEach((parcel) => {
+            if (!parcel.deliveryChargeOnlinePaymentStatus) {
+              hqPayableProfit += parcel.deliveryCharge || 0;
+              payableParcelCount += 1;
+            }
+          });
+
+          const responseData = {
+            success: true,
+            hubName,
+            totalParcelCount: payableParcelCount,
+            hqPayableProfit,
+          };
+
+          const jsonString = JSON.stringify(responseData);
+          hubProfitCache.set(cacheKey, jsonString);
+          return jsonString;
+        })();
+
+        pendingHubProfitRequests.set(cacheKey, fetchPromise);
+      }
+
+      const jsonString = await pendingHubProfitRequests.get(cacheKey);
+
+      pendingHubProfitRequests.delete(cacheKey);
+
+      res.setHeader("Content-Type", "application/json");
+      res.status(200).send(jsonString);
     } catch (error) {
+      const { hubName } = req.params;
+      pendingHubProfitRequests.delete(`hub_profit_metrics_${hubName}`);
+
       console.error("Hub Profit Metrics Error:", error);
       res
         .status(500)
