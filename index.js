@@ -590,6 +590,15 @@ app.patch("/users/verify-status/:email", async (req, res) => {
         },
       },
     );
+
+    if (typeof usersCache !== "undefined") {
+      usersCache.flushAll();
+    }
+
+    if (typeof userCache !== "undefined") {
+      userCache.flushAll();
+    }
+    
     res.send(result);
   } catch (error) {
     res.status(500).send({ error: error.message });
