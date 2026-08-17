@@ -2906,7 +2906,7 @@ app.post(
       if (typeof hubAgeingCache !== "undefined") {
         hubAgeingCache.flushAll();
       }
-      
+
       res.send(result);
     } catch (error) {
       res.status(500).send({ message: "Internal Server Error" });
@@ -3415,6 +3415,30 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
           },
         },
       );
+
+      if (typeof hubDepositHistoryCache !== "undefined") {
+        hubDepositHistoryCache.flushAll();
+      }
+
+      if (typeof hubHandCashCache !== "undefined") {
+        hubHandCashCache.flushAll();
+      }
+
+      if (typeof hubMasterAdminCache !== "undefined") {
+        hubMasterAdminCache.flushAll();
+      }
+
+      if (typeof parcelsCache !== "undefined") {
+        parcelsCache.flushAll();
+      }
+
+      if (typeof parcelsStatusWiseCache !== "undefined") {
+        parcelsStatusWiseCache.flushAll();
+      }
+
+      if (typeof revenueStatsCache !== "undefined") {
+        revenueStatsCache.flushAll();
+      }
     }
 
     res.status(201).send({
