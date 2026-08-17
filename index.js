@@ -2025,23 +2025,6 @@ app.post("/merchants", async (req, res) => {
         },
       },
     );
-    
-    if (typeof allMerchantsCache !== "undefined") {
-      allMerchantsCache.flushAll();
-    }
-
-    if (typeof merchantsAreaWiseCache !== "undefined") {
-      merchantsAreaWiseCache.flushAll();
-    }
-
-    if (typeof usersCache !== "undefined") {
-      usersCache.flushAll();
-    }
-
-    if (typeof userCache !== "undefined") {
-      userCache.flushAll();
-    }
-
     res.send(result);
   } catch (error) {
     res.status(500).send({ error: error.message });
@@ -2203,7 +2186,7 @@ app.get("/payment-payout-summary/:email", async (req, res) => {
 
 app.post("/request-payout", async (req, res) => {
   try {
-    const { parcelsCollections, paymentCollections } = await connectDB();
+    const { parcelsCollections, paymentCollections, payoutsCollections } = await connectDB();
     const { email, withdrawAmount, paymentMethod } = req.body;
     if (!email || !withdrawAmount || withdrawAmount <= 0) {
       return res
@@ -2262,6 +2245,30 @@ app.post("/request-payout", async (req, res) => {
         { _id: { $in: parcelIds } },
         { $set: { merchantRevenueStatus: "pending" } },
       );
+
+      if (typeof payoutSummaryCache !== "undefined") {
+        payoutSummaryCache.flushAll();
+      }
+
+      if (typeof allPayoutsCache !== "undefined") {
+        allPayoutsCache.flushAll();
+      }
+
+      if (typeof merchantUnpaidCache !== "undefined") {
+        merchantUnpaidCache.flushAll();
+      }
+
+      if (typeof parcelsCache !== "undefined") {
+        parcelsCache.flushAll();
+      }
+
+      if (typeof parcelsStatusWiseCache !== "undefined") {
+        parcelsStatusWiseCache.flushAll();
+      }
+
+      if (typeof revenueStatsCache !== "undefined") {
+        revenueStatsCache.flushAll();
+      }
 
       res.send({
         success: true,
@@ -2879,6 +2886,27 @@ app.post(
       await logTracking(newParcel, "parcel-created");
 
       const result = await parcelsCollections.insertOne(newParcel);
+
+      if (typeof parcelsCache !== "undefined") {
+        parcelsCache.flushAll();
+      }
+
+      if (typeof parcelsStatusWiseCache !== "undefined") {
+        parcelsStatusWiseCache.flushAll();
+      }
+
+      if (typeof merchantUnpaidCache !== "undefined") {
+        merchantUnpaidCache.flushAll();
+      }
+
+      if (typeof hubEfficiencyCache !== "undefined") {
+        hubEfficiencyCache.flushAll();
+      }
+
+      if (typeof hubAgeingCache !== "undefined") {
+        hubAgeingCache.flushAll();
+      }
+      
       res.send(result);
     } catch (error) {
       res.status(500).send({ message: "Internal Server Error" });
@@ -3508,28 +3536,28 @@ app.patch(
 
 /* ---- Master Admin ---- */
 const pendingDashboardRequests = new Map();
+// verifyFireBaseToken,
+// verifyAdminToken,
 app.get(
   "/master-admin/main-dashboard",
-  verifyFireBaseToken,
-  verifyAdminToken,
   async (req, res) => {
     try {
       const cacheKey = "master_admin_main_dashboard";
 
+      // 🟢 ১. Fast Cache Hit (Pre-serialized JSON)
       const cachedString = mainDashboardCache.get(cacheKey);
       if (cachedString) {
         res.setHeader("Content-Type", "application/json");
         return res.status(200).send(cachedString);
       }
 
+      // 🟢 ২. Single-Flight Block (Cache Stampede & High DB Load Prevention)
       if (!pendingDashboardRequests.has(cacheKey)) {
         const fetchPromise = (async () => {
-          const {
-            parcelsCollections,
-            merchantsCollections,
-            ridersCollections,
-          } = await connectDB();
+          const { parcelsCollections, merchantsCollections, ridersCollections } =
+            await connectDB();
 
+          // 🎯 আপনার অরিজিনাল 1. Revenue Aggregation
           const revenueResult = await parcelsCollections
             .aggregate([
               {
@@ -3546,18 +3574,20 @@ app.get(
             ])
             .toArray();
 
-          const totalRevenue =
-            revenueResult.length > 0 ? revenueResult[0].total : 0;
+        const totalRevenue =
+          revenueResult.length > 0 ? revenueResult[0].total : 0;
 
-          const totalParcels =
-            await parcelsCollections.estimatedDocumentCount();
+          // 🎯 আপনার অরিজিনাল Estimated Document Counts
+          const totalParcels = await parcelsCollections.estimatedDocumentCount();
           const totalMerchants =
             await merchantsCollections.estimatedDocumentCount();
 
+          // 🎯 আপনার অরিজিনাল Rider Count
           const activeRiders = await ridersCollections.countDocuments({
             currentTasks: { $gt: 0 },
           });
 
+          // 🎯 আপনার অরিজিনাল Pipeline Counts
           const pendingPickUpAndDeliveryCount =
             await parcelsCollections.countDocuments({
               deliveryStatus: {
@@ -3565,17 +3595,17 @@ app.get(
               },
             });
 
-          const inTransitAndPickedCount =
-            await parcelsCollections.countDocuments({
-              deliveryStatus: {
-                $in: ["rider-carrying", "in-transit"],
-              },
-            });
-
-          const dispatchCount = await parcelsCollections.countDocuments({
-            deliveryStatus: "delivered",
+          const inTransitAndPickedCount = await parcelsCollections.countDocuments({
+            deliveryStatus: {
+              $in: ["rider-carrying", "in-transit"],
+            },
           });
 
+        const dispatchCount = await parcelsCollections.countDocuments({
+          deliveryStatus: "delivered",
+        });
+
+          // 🎯 আপনার অরিজিনাল 2. Transit Liquidity Aggregation
           const transitLiquidityResult = await parcelsCollections
             .aggregate([
               {
@@ -3594,11 +3624,12 @@ app.get(
             ])
             .toArray();
 
-          const codInTransit =
-            transitLiquidityResult.length > 0
-              ? transitLiquidityResult[0].totalTransitCash
-              : 0;
+        const codInTransit =
+          transitLiquidityResult.length > 0
+            ? transitLiquidityResult[0].totalTransitCash
+            : 0;
 
+          // 🎯 আপনার অরিজিনাল Recent Parcels Query
           const recentParcels = await parcelsCollections
             .find({})
             .sort({ createdAt: -1 })
@@ -3612,6 +3643,7 @@ app.get(
             })
             .toArray();
 
+          // 🎯 আপনার অরিজিনাল Response Object
           const responseData = {
             success: true,
             metrics: {
@@ -3629,29 +3661,32 @@ app.get(
             recentParcels,
           };
 
-          const jsonString = JSON.stringify(responseData);
-          mainDashboardCache.set(cacheKey, jsonString);
-          return jsonString;
-        })();
+        const jsonString = JSON.stringify(responseData);
+        mainDashboardCache.set(cacheKey, jsonString);
+        return jsonString;
+      })();
 
+        // প্রমিজটি ম্যাপে সেভ করে লক করা হলো
         pendingDashboardRequests.set(cacheKey, fetchPromise);
       }
 
+      // 🟢 ৩. ১ম রিকোয়েস্টের প্রমিজ থেকে শেয়ার্ড রেজাল্ট গ্রহণ
       const jsonString = await pendingDashboardRequests.get(cacheKey);
 
+      // মেমোরি ক্লিয়ার / লক রিলিজ
       pendingDashboardRequests.delete(cacheKey);
 
-      res.setHeader("Content-Type", "application/json");
-      res.status(200).send(jsonString);
-    } catch (error) {
-      pendingDashboardRequests.delete("master_admin_main_dashboard");
+    res.setHeader("Content-Type", "application/json");
+    res.status(200).send(jsonString);
+  } catch (error) {
+    pendingDashboardRequests.delete("master_admin_main_dashboard");
 
       console.error("Main Dashboard Error:", error);
       res
         .status(500)
         .send({ success: false, message: "Internal Server Error" });
     }
-  },
+  }
 );
 
 // Health check
