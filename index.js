@@ -2341,6 +2341,15 @@ app.patch(
         { $set: updatedMerchantInfo },
       );
       if (result.modifiedCount > 0) {
+
+        if (typeof targetedMerchantCache !== "undefined") {
+          merchantsCache.flushAll();
+        }
+
+        if (typeof userCache !== "undefined") {
+          userCache.flushAll();
+        }
+
         res.send({
           success: true,
           message: "Merchant profile edited done",
