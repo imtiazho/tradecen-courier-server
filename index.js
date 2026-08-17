@@ -1541,7 +1541,7 @@ app.patch(
         if (typeof availableRidersCache !== "undefined") {
           availableRidersCache.flushAll();
         }
-        
+
         res
           .status(200)
           .send({ success: true, message: "Rider assigned successfully" });
@@ -1600,6 +1600,26 @@ app.patch("/parcels/assign-return-delivery", async (req, res) => {
     );
 
     if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
+      if (typeof parcelsCache !== "undefined") {
+        parcelsCache.flushAll();
+      }
+
+      if (typeof parcelsStatusWiseCache !== "undefined") {
+        parcelsStatusWiseCache.flushAll();
+      }
+
+      if (typeof parcelTrackCache !== "undefined") {
+        parcelTrackCache.flushAll();
+      }
+
+      if (typeof ridersCache !== "undefined") {
+        ridersCache.flushAll();
+      }
+
+      if (typeof availableRidersCache !== "undefined") {
+        availableRidersCache.flushAll();
+      }
+
       res
         .status(200)
         .send({ success: true, message: "Rider assigned successfully" });
