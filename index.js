@@ -3365,7 +3365,7 @@ app.patch(
         if (typeof hubEfficiencyCache !== "undefined") {
           hubEfficiencyCache.flushAll();
         }
-        
+
         res.send({
           success: true,
           message: "Parcel status updated to in-transit",
@@ -3404,6 +3404,38 @@ app.patch(
       });
       await logTracking(parcel, "reached-origin-warehouse");
       if (result.modifiedCount > 0) {
+        if (typeof parcelsCache !== "undefined") {
+          parcelsCache.flushAll();
+        }
+
+        if (typeof parcelsStatusWiseCache !== "undefined") {
+          parcelsStatusWiseCache.flushAll();
+        }
+
+        if (typeof parcelDetailCache !== "undefined") {
+          parcelDetailCache.flushAll();
+        }
+
+        if (typeof trackingCache !== "undefined") {
+          trackingCache.flushAll();
+        }
+
+        if (typeof pickupCache !== "undefined") {
+          pickupCache.flushAll();
+        }
+
+        if (typeof sortingCache !== "undefined") {
+          sortingCache.flushAll();
+        }
+
+        if (typeof managerCache !== "undefined") {
+          managerCache.flushAll();
+        }
+
+        if (typeof hubAgingCache !== "undefined") {
+          hubAgingCache.flushAll();
+        }
+
         res.send({
           success: true,
           message: "Parcel status updated to in-transit",
@@ -3918,6 +3950,38 @@ app.patch(
         { _id: { $in: objectParcelIds } },
         { $set: { isDepositedToHQ: true, depositRequestStatus: "approved" } },
       );
+
+      if (typeof depositHistoryCache !== "undefined") {
+        depositHistoryCache.flushAll();
+      }
+
+      if (typeof lateInvoicesCache !== "undefined") {
+        lateInvoicesCache.flushAll();
+      }
+
+      if (typeof hubHandCashCache !== "undefined") {
+        hubHandCashCache.flushAll();
+      }
+
+      if (typeof hubProfitCache !== "undefined") {
+        hubProfitCache.flushAll();
+      }
+
+      if (typeof revenueStatsCache !== "undefined") {
+        revenueStatsCache.flushAll();
+      }
+
+      if (typeof parcelsCache !== "undefined") {
+        parcelsCache.flushAll();
+      }
+
+      if (typeof parcelsStatusWiseCache !== "undefined") {
+        parcelsStatusWiseCache.flushAll();
+      }
+
+      if (typeof mainDashboardCache !== "undefined") {
+        mainDashboardCache.flushAll();
+      }
 
       res.send({ success: true, message: "Deposit approved successfully!" });
     } catch (error) {
