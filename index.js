@@ -2592,6 +2592,30 @@ app.patch("/approve-payout/:id", async (req, res) => {
         { $set: { merchantRevenueStatus: true, deliveryChargeStatus: "paid" } },
       );
 
+      if (typeof allPayoutsCache !== "undefined") {
+        allPayoutsCache.flushAll();
+      }
+
+      if (typeof payoutSummaryCache !== "undefined") {
+        payoutSummaryCache.flushAll();
+      }
+
+      if (typeof parcelsCache !== "undefined") {
+        parcelsCache.flushAll();
+      }
+
+      if (typeof parcelsStatusWiseCache !== "undefined") {
+        parcelsStatusWiseCache.flushAll();
+      }
+
+      if (typeof allMerchantsCache !== "undefined") {
+        allMerchantsCache.flushAll();
+      }
+
+      if (typeof merchantUnpaidCache !== "undefined") {
+        merchantUnpaidCache.flushAll();
+      }
+
       return res.send({
         success: true,
         message: "Payout approved and completed successfully!",
@@ -2617,6 +2641,30 @@ app.patch("/approve-payout/:id", async (req, res) => {
         { _id: { $in: parcelIds } },
         { $set: { merchantRevenueStatus: null } },
       );
+
+      if (typeof allPayoutsCache !== "undefined") {
+        allPayoutsCache.flushAll();
+      }
+
+      if (typeof payoutSummaryCache !== "undefined") {
+        payoutSummaryCache.flushAll();
+      }
+
+      if (typeof parcelsCache !== "undefined") {
+        parcelsCache.flushAll();
+      }
+
+      if (typeof parcelsStatusWiseCache !== "undefined") {
+        parcelsStatusWiseCache.flushAll();
+      }
+
+      if (typeof allMerchantsCache !== "undefined") {
+        allMerchantsCache.flushAll();
+      }
+
+      if (typeof merchantUnpaidCache !== "undefined") {
+        merchantUnpaidCache.flushAll();
+      }
 
       return res.send({
         success: true,
