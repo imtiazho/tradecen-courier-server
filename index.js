@@ -562,11 +562,7 @@ app.post("/users", async (req, res) => {
     const result = await userCollections.insertOne(user);
 
     if (typeof usersCache !== "undefined") {
-      const keys = usersCache.keys();
-      const userKeys = keys.filter((key) => key.startsWith("users_search:"));
-      if (userKeys.length > 0) {
-        usersCache.del(userKeys);
-      }
+      usersCache.flushAll();
     }
 
     res.send(result);
@@ -1203,9 +1199,10 @@ app.post("/riders", async (req, res) => {
 //   }
 // });
 
-// verifyFireBaseToken,
-//   verifyRoles("admin", "hub-manager", "rider")
-  app.get("/riders", async (req, res) => {
+app.get("/riders",
+  verifyFireBaseToken,
+    verifyRoles("admin", "hub-manager", "rider"),
+    async (req, res) => {
     try {
       const { status, workStatus, email, area } = req.query;
       const cacheKey = `riders_${status || "all"}_${workStatus || "all"}_${email || "all"}_${area || "all"}`;
@@ -2010,7 +2007,7 @@ app.get(
 
 app.post("/merchants", async (req, res) => {
   try {
-    const { merchantsCollections } = await connectDB();
+    const { merchantsCollections, userCollections } = await connectDB();
     const newMerchant = req.body;
     const isExist = await merchantsCollections.findOne({
       email: newMerchant.email,
@@ -2028,6 +2025,23 @@ app.post("/merchants", async (req, res) => {
         },
       },
     );
+    
+    if (typeof allMerchantsCache !== "undefined") {
+      allMerchantsCache.flushAll();
+    }
+
+    if (typeof merchantsAreaWiseCache !== "undefined") {
+      merchantsAreaWiseCache.flushAll();
+    }
+
+    if (typeof usersCache !== "undefined") {
+      usersCache.flushAll();
+    }
+
+    if (typeof userCache !== "undefined") {
+      userCache.flushAll();
+    }
+
     res.send(result);
   } catch (error) {
     res.status(500).send({ error: error.message });
