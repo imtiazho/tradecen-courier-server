@@ -655,8 +655,8 @@ app.patch(
           userCache.flushAll();
         }
 
-        if (typeof hubMasterAdminCache !== "undefined") {
-          hubMasterAdminCache.flushAll();
+        if (typeof managerCache !== "undefined") {
+          managerCache.flushAll();
         }
         res.send({
           success: true,
@@ -1113,6 +1113,14 @@ app.patch("/rider/status/:email", async (req, res) => {
     );
 
     if (result.modifiedCount > 0 || result.matchedCount > 0) {
+      if (typeof ridersCache !== "undefined") {
+        ridersCache.flushAll();
+      }
+
+      if (typeof availableRidersCache !== "undefined") {
+        availableRidersCache.flushAll();
+      }
+
       return res.send({
         success: true,
         message: "Rider status synchronized successfully!",
@@ -1155,6 +1163,22 @@ app.patch(
         _id: new ObjectId(parcelId),
       });
       await logTracking(parcelData, "hold-up");
+
+      if (typeof parcelsCache !== "undefined") {
+        parcelsCache.flushAll();
+      }
+
+      if (typeof parcelsStatusWiseCache !== "undefined") {
+        parcelsStatusWiseCache.flushAll();
+      }
+
+      if (typeof ridersCache !== "undefined") {
+        ridersCache.flushAll();
+      }
+
+      if (typeof hubAgeingCache !== "undefined") {
+        hubAgeingCache.flushAll();
+      }
 
       res
         .status(200)
@@ -3452,8 +3476,8 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
         hubHandCashCache.flushAll();
       }
 
-      if (typeof hubMasterAdminCache !== "undefined") {
-        hubMasterAdminCache.flushAll();
+      if (typeof managerCache !== "undefined") {
+        managerCache.flushAll();
       }
 
       if (typeof parcelsCache !== "undefined") {
