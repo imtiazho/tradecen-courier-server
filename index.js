@@ -371,10 +371,14 @@ async function connectDB() {
     createdAt: -1,
   });
 
-await parcelsCollections.createIndex({ deliveryStatus: 1 });
-await parcelsCollections.createIndex({ status: 1, revMethod: 1, isDepositedToHQ: 1 });
-await parcelsCollections.createIndex({ createdAt: -1 });
-await ridersCollections.createIndex({ currentTasks: 1 });
+  await parcelsCollections.createIndex({ deliveryStatus: 1 });
+  await parcelsCollections.createIndex({
+    status: 1,
+    revMethod: 1,
+    isDepositedToHQ: 1,
+  });
+  await parcelsCollections.createIndex({ createdAt: -1 });
+  await ridersCollections.createIndex({ currentTasks: 1 });
 
   return {
     userCollections,
@@ -556,6 +560,14 @@ app.post("/users", async (req, res) => {
     }
 
     const result = await userCollections.insertOne(user);
+
+    if (typeof usersCache !== "undefined") {
+      const keys = usersCache.keys();
+      const userKeys = keys.filter((key) => key.startsWith("users_search:"));
+      if (userKeys.length > 0) {
+        usersCache.del(userKeys);
+      }
+    }
 
     res.send(result);
   } catch (err) {
@@ -3465,30 +3477,29 @@ app.patch(
 );
 
 /* ---- Master Admin ---- */
-
 const pendingDashboardRequests = new Map();
-// verifyFireBaseToken,
-// verifyAdminToken,
 app.get(
   "/master-admin/main-dashboard",
+  verifyFireBaseToken,
+  verifyAdminToken,
   async (req, res) => {
     try {
       const cacheKey = "master_admin_main_dashboard";
 
-      // 🟢 ১. Fast Cache Hit (Pre-serialized JSON)
       const cachedString = mainDashboardCache.get(cacheKey);
       if (cachedString) {
         res.setHeader("Content-Type", "application/json");
         return res.status(200).send(cachedString);
       }
 
-      // 🟢 ২. Single-Flight Block (Cache Stampede & High DB Load Prevention)
       if (!pendingDashboardRequests.has(cacheKey)) {
         const fetchPromise = (async () => {
-          const { parcelsCollections, merchantsCollections, ridersCollections } =
-            await connectDB();
+          const {
+            parcelsCollections,
+            merchantsCollections,
+            ridersCollections,
+          } = await connectDB();
 
-          // 🎯 আপনার অরিজিনাল 1. Revenue Aggregation
           const revenueResult = await parcelsCollections
             .aggregate([
               {
@@ -3508,17 +3519,15 @@ app.get(
           const totalRevenue =
             revenueResult.length > 0 ? revenueResult[0].total : 0;
 
-          // 🎯 আপনার অরিজিনাল Estimated Document Counts
-          const totalParcels = await parcelsCollections.estimatedDocumentCount();
+          const totalParcels =
+            await parcelsCollections.estimatedDocumentCount();
           const totalMerchants =
             await merchantsCollections.estimatedDocumentCount();
 
-          // 🎯 আপনার অরিজিনাল Rider Count
           const activeRiders = await ridersCollections.countDocuments({
             currentTasks: { $gt: 0 },
           });
 
-          // 🎯 আপনার অরিজিনাল Pipeline Counts
           const pendingPickUpAndDeliveryCount =
             await parcelsCollections.countDocuments({
               deliveryStatus: {
@@ -3526,17 +3535,17 @@ app.get(
               },
             });
 
-          const inTransitAndPickedCount = await parcelsCollections.countDocuments({
-            deliveryStatus: {
-              $in: ["rider-carrying", "in-transit"],
-            },
-          });
+          const inTransitAndPickedCount =
+            await parcelsCollections.countDocuments({
+              deliveryStatus: {
+                $in: ["rider-carrying", "in-transit"],
+              },
+            });
 
           const dispatchCount = await parcelsCollections.countDocuments({
             deliveryStatus: "delivered",
           });
 
-          // 🎯 আপনার অরিজিনাল 2. Transit Liquidity Aggregation
           const transitLiquidityResult = await parcelsCollections
             .aggregate([
               {
@@ -3560,7 +3569,6 @@ app.get(
               ? transitLiquidityResult[0].totalTransitCash
               : 0;
 
-          // 🎯 আপনার অরিজিনাল Recent Parcels Query
           const recentParcels = await parcelsCollections
             .find({})
             .sort({ createdAt: -1 })
@@ -3574,7 +3582,6 @@ app.get(
             })
             .toArray();
 
-          // 🎯 আপনার অরিজিনাল Response Object
           const responseData = {
             success: true,
             metrics: {
@@ -3597,14 +3604,11 @@ app.get(
           return jsonString;
         })();
 
-        // প্রমিজটি ম্যাপে সেভ করে লক করা হলো
         pendingDashboardRequests.set(cacheKey, fetchPromise);
       }
 
-      // 🟢 ৩. ১ম রিকোয়েস্টের প্রমিজ থেকে শেয়ার্ড রেজাল্ট গ্রহণ
       const jsonString = await pendingDashboardRequests.get(cacheKey);
 
-      // মেমোরি ক্লিয়ার / লক রিলিজ
       pendingDashboardRequests.delete(cacheKey);
 
       res.setHeader("Content-Type", "application/json");
@@ -3617,7 +3621,7 @@ app.get(
         .status(500)
         .send({ success: false, message: "Internal Server Error" });
     }
-  }
+  },
 );
 
 // Health check
