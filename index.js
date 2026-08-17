@@ -1599,7 +1599,7 @@ app.patch("/parcels/assign-return-delivery", async (req, res) => {
     );
 
     await logTracking(parcelData, "assign-return-rider");
-    
+
     const riderUpdate = await ridersCollections.updateOne(
       { _id: new ObjectId(riderId) },
       {
@@ -1760,8 +1760,27 @@ app.patch(
         },
       );
 
+      if (typeof parcelsCache !== "undefined") {
+        parcelsCache.flushAll();
+      }
+
+      if (typeof parcelsStatusWiseCache !== "undefined") {
+        parcelsStatusWiseCache.flushAll();
+      }
+
+      if (typeof trackingCache !== "undefined") {
+        trackingCache.flushAll();
+      }
+
+      if (typeof ridersCache !== "undefined") {
+        ridersCache.flushAll();
+      }
+
+      if (typeof availableRidersCache !== "undefined") {
+        availableRidersCache.flushAll();
+      }
+
       res.send({ success: true, result });
-      console.log(riderId, parcelId, trackingID);
     } catch (error) {
       res
         .status(500)
