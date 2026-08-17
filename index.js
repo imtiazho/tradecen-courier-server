@@ -1841,6 +1841,30 @@ app.patch("/riders/return-req/update", async (req, res) => {
       },
     );
 
+    if (typeof parcelsCache !== "undefined") {
+      parcelsCache.flushAll();
+    }
+
+    if (typeof parcelsStatusWiseCache !== "undefined") {
+      parcelsStatusWiseCache.flushAll();
+    }
+
+    if (typeof trackingCache !== "undefined") {
+      trackingCache.flushAll();
+    }
+
+    if (typeof ridersCache !== "undefined") {
+      ridersCache.flushAll();
+    }
+
+    if (typeof availableRidersCache !== "undefined") {
+      availableRidersCache.flushAll();
+    }
+
+    if (typeof managerCache !== "undefined") {
+      managerCache.flushAll();
+    }
+
     res.send({
       success: true,
       message:
