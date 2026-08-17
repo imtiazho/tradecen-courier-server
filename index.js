@@ -1176,8 +1176,8 @@ app.patch(
         ridersCache.flushAll();
       }
 
-      if (typeof hubAgeingCache !== "undefined") {
-        hubAgeingCache.flushAll();
+      if (typeof hubAgingCache !== "undefined") {
+        hubAgingCache.flushAll();
       }
 
       res
@@ -1363,6 +1363,22 @@ app.patch(
           userFilter,
           userUpdate,
         );
+
+        if (typeof ridersCache !== "undefined") {
+          ridersCache.flushAll();
+        }
+
+        if (typeof availableRidersCache !== "undefined") {
+          availableRidersCache.flushAll();
+        }
+
+        if (typeof usersCache !== "undefined") {
+          usersCache.flushAll();
+        }
+
+        if (typeof userCache !== "undefined") {
+          userCache.flushAll();
+        }
 
         res.send({
           success: true,
@@ -2955,8 +2971,8 @@ app.post(
         hubEfficiencyCache.flushAll();
       }
 
-      if (typeof hubAgeingCache !== "undefined") {
-        hubAgeingCache.flushAll();
+      if (typeof hubAgingCache !== "undefined") {
+        hubAgingCache.flushAll();
       }
 
       res.send(result);
