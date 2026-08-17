@@ -2129,6 +2129,30 @@ app.patch(
         },
       );
 
+      if (typeof parcelsCache !== "undefined") {
+        parcelsCache.flushAll();
+      }
+
+      if (typeof parcelsStatusWiseCache !== "undefined") {
+        parcelsStatusWiseCache.flushAll();
+      }
+
+      if (typeof trackingCache !== "undefined") {
+        trackingCache.flushAll();
+      }
+
+      if (typeof ridersCache !== "undefined") {
+        ridersCache.flushAll();
+      }
+
+      if (typeof availableRidersCache !== "undefined") {
+        availableRidersCache.flushAll();
+      }
+
+      if (typeof targetedMerchantCache !== "undefined") {
+        targetedMerchantCache.flushAll();
+      }
+
       res.send({ success: true, result });
     } catch (error) {
       res
