@@ -2024,7 +2024,25 @@ app.patch("/parcels/return-origin-hub/received/:parcelId", async (req, res) => {
       { returnDocument: "after" },
     );
 
-    parcelCache.flushAll();
+    if (typeof parcelsCache !== "undefined") {
+      parcelsCache.flushAll();
+    }
+
+    if (typeof parcelsStatusWiseCache !== "undefined") {
+      parcelsStatusWiseCache.flushAll();
+    }
+
+    if (typeof trackingCache !== "undefined") {
+      trackingCache.flushAll();
+    }
+
+    if (typeof hubAgingCache !== "undefined") {
+      hubAgingCache.flushAll();
+    }
+
+    if (typeof managerCache !== "undefined") {
+      managerCache.flushAll();
+    }
 
     if (!updatedParcel) {
       return res.status(404).send({
