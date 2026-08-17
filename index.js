@@ -1001,9 +1001,9 @@ app.get(
       const totalCollectedAmount =
         deliveredParcels.length > 0
           ? deliveredParcels.reduce(
-              (total, parcel) => total + (Number(parcel.codAmount) || 0),
-              0,
-            )
+            (total, parcel) => total + (Number(parcel.codAmount) || 0),
+            0,
+          )
           : 0;
 
       const totalAssign = Number(riderData.totalAssign) || 0;
@@ -1041,7 +1041,7 @@ app.get(
         todayDeliveryCompleteParcels,
         todaysCompleteTotal:
           todayPickUpCompleteParcels.length +
-            todayDeliveryCompleteParcels.length || 0,
+          todayDeliveryCompleteParcels.length || 0,
       });
 
       res.send({
@@ -1062,7 +1062,7 @@ app.get(
         todayDeliveryCompleteParcels,
         todaysCompleteTotal:
           todayPickUpCompleteParcels.length +
-            todayDeliveryCompleteParcels.length || 0,
+          todayDeliveryCompleteParcels.length || 0,
       });
     } catch (error) {
       console.error("Rider API Error:", error);
@@ -1145,13 +1145,13 @@ app.patch(
 
 app.post("/riders", async (req, res) => {
   try {
-    const { ridersCollections } = await connectDB();
+    const { ridersCollections, userCollections } = await connectDB();
     const newRider = req.body;
     const isExist = await ridersCollections.findOne({ email: newRider.email });
     if (isExist) {
       return res.send({ message: "This email already used for rider!" });
     }
-
+    
     const result = await ridersCollections.insertOne(newRider);
     const userRes = await userCollections.updateOne(
       { email: newRider.email },
@@ -1161,6 +1161,22 @@ app.post("/riders", async (req, res) => {
         },
       },
     );
+
+    if (typeof ridersCache !== "undefined") {
+      ridersCache.flushAll();
+    }
+
+    if (typeof usersCache !== "undefined") {
+      usersCache.flushAll();
+    }
+
+    if (typeof userCache !== "undefined") {
+      userCache.flushAll();
+    }
+
+    if (typeof availableRidersCache !== "undefined") {
+      availableRidersCache.flushAll();
+    }
 
     res.send(result);
   } catch (error) {
@@ -1187,8 +1203,8 @@ app.post("/riders", async (req, res) => {
 //   }
 // });
 
-(verifyFireBaseToken,
-  verifyRoles("admin", "hub-manager", "rider"),
+// verifyFireBaseToken,
+//   verifyRoles("admin", "hub-manager", "rider")
   app.get("/riders", async (req, res) => {
     try {
       const { status, workStatus, email, area } = req.query;
@@ -1226,7 +1242,7 @@ app.post("/riders", async (req, res) => {
       console.error("Error fetching riders:", error);
       res.status(500).send({ message: "Internal Server Error" });
     }
-  }));
+  });
 
 app.get(
   "/riders/available/:areaName",
