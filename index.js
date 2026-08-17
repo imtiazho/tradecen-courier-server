@@ -4219,6 +4219,30 @@ app.patch("/verify-payment", async (req, res) => {
     };
     await paymentCollections.insertOne(paymentHistory);
 
+    if (typeof parcelsCache !== "undefined") {
+      parcelsCache.flushAll();
+    }
+
+    if (typeof parcelsStatusWiseCache !== "undefined") {
+      parcelsStatusWiseCache.flushAll();
+    }
+
+    if (typeof parcelDetailCache !== "undefined") {
+      parcelDetailCache.flushAll();
+    }
+
+    if (typeof trackingCache !== "undefined") {
+      trackingCache.flushAll();
+    }
+
+    if (typeof revenueStatsCache !== "undefined") {
+      revenueStatsCache.flushAll();
+    }
+
+    if (typeof mainDashboardCache !== "undefined") {
+      mainDashboardCache.flushAll();
+    }
+
     // Logs Stream Here
 
     return res.send({
