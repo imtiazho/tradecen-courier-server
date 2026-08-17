@@ -598,7 +598,7 @@ app.patch("/users/verify-status/:email", async (req, res) => {
     if (typeof userCache !== "undefined") {
       userCache.flushAll();
     }
-    
+
     res.send(result);
   } catch (error) {
     res.status(500).send({ error: error.message });
@@ -647,6 +647,17 @@ app.patch(
       const insertResult = await hubManagersCollection.insertOne(hubManagerDoc);
 
       if (insertResult.insertedId) {
+        if (typeof usersCache !== "undefined") {
+          usersCache.flushAll();
+        }
+
+        if (typeof userCache !== "undefined") {
+          userCache.flushAll();
+        }
+
+        if (typeof hubMasterAdminCache !== "undefined") {
+          hubMasterAdminCache.flushAll();
+        }
         res.send({
           success: true,
           message: "User promoted and added to Hub Managers collection",
