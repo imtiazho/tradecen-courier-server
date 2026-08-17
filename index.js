@@ -1978,7 +1978,26 @@ app.patch("/hub/dispatch-return-to-origin/:parcelId", async (req, res) => {
         $pull: { returnReq: { _id: new ObjectId(parcelId) } },
       },
     );
-    managerCache.flushAll();
+    
+    if (typeof managerCache !== "undefined") {
+      managerCache.flushAll();
+    }
+
+    if (typeof parcelsCache !== "undefined") {
+      parcelsCache.flushAll();
+    }
+
+    if (typeof parcelsStatusWiseCache !== "undefined") {
+      parcelsStatusWiseCache.flushAll();
+    }
+
+    if (typeof trackingCache !== "undefined") {
+      trackingCache.flushAll();
+    }
+
+    if (typeof hubAgingCache !== "undefined") {
+      hubAgingCache.flushAll();
+    }
 
     res.send({
       success: true,
