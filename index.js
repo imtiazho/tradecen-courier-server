@@ -5,38 +5,74 @@ const dotenv = require("dotenv");
 const dns = require("dns");
 const nodemailer = require("nodemailer");
 const NodeCache = require("node-cache");
-// const compression = require("compression");
+
+class VersionedCache {
+  constructor(options) {
+    this.store = new NodeCache(options);
+    this.versions = new Map();
+  }
+
+  _version(owner) {
+    return this.versions.get(owner) || 1;
+  }
+
+  _buildKey(owner, parts) {
+    return `v${this._version(owner)}:${owner}:${parts.join("|")}`;
+  }
+
+  get(owner, parts) {
+    return this.store.get(this._buildKey(owner, parts));
+  }
+
+  set(owner, parts, value) {
+    return this.store.set(this._buildKey(owner, parts), value);
+  }
+
+  bump(owner) {
+    this.versions.set(owner, this._version(owner) + 1);
+  }
+}
+
 const trackingCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
-const usersCache = new NodeCache({ stdTTL: 10, checkperiod: 12 });
-const userCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
-const userRoleCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
-const managerCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
-const parcelCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+const usersCache = new VersionedCache({ stdTTL: 10, checkperiod: 12 });
+const userCache = new NodeCache({ stdTTL: 3600, checkperiod: 120 });
+const userRoleCache = new NodeCache({ stdTTL: 3600, checkperiod: 120 });
+const managerCache = new VersionedCache({ stdTTL: 10, checkperiod: 60 });
+const incomingParcelsCache = new NodeCache({ stdTTL: 10, checkperiod: 60 });
+const merchantParcelsCache = new VersionedCache({
+  stdTTL: 30,
+  checkperiod: 60,
+});
 const pickupCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
 const sortingCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const outForDeliveryCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const hubDeliveredCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 const riderCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
-const ridersCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
+const ridersCache = new VersionedCache({ stdTTL: 60, checkperiod: 120 });
 const availableRidersCache = new NodeCache({ stdTTL: 15, checkperiod: 30 });
 const returnWarehouseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const allMerchantsCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
 const merchantsAreaWiseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
-const targetedMerchantCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
+const targetedMerchantCache = new NodeCache({ stdTTL: 1800, checkperiod: 120 });
 const payoutSummaryCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const allPayoutsCache = new NodeCache({ stdTTL: 20, checkperiod: 60 });
-const parcelsCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const parcelDetailCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const lateInvoicesCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
 const merchantUnpaidCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
-const parcelsStatusWiseCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
-const parcelStatsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
-const revenueStatsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
-const hubHandCashCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
-const hubProfitCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+const parcelsStatusWiseCache = new VersionedCache({
+  stdTTL: 30,
+  checkperiod: 60,
+});
+const parcelStatsCache = new NodeCache({ stdTTL: 10, checkperiod: 60 });
+const revenueStatsCache = new VersionedCache({ stdTTL: 10, checkperiod: 60 });
+const hubHandCashCache = new NodeCache({ stdTTL: 10, checkperiod: 60 });
+const hubProfitCache = new NodeCache({ stdTTL: 10, checkperiod: 60 });
 const hubAgingCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
 const hubEfficiencyCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
-const depositHistoryCache = new NodeCache({ stdTTL: 180, checkperiod: 60 });
+const depositHistoryCache = new VersionedCache({
+  stdTTL: 180,
+  checkperiod: 60,
+});
 const mainDashboardCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
@@ -54,18 +90,10 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 5000;
 
-// DNS fix
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
 
-// Middleware
 app.use(cors());
 app.use(express.json());
-// app.use(
-//   compression({
-//     level: 6,
-//     threshold: 1024,
-//   }),
-// );
 
 const verifyFireBaseToken = async (req, res, next) => {
   const token = req.headers.authorization;
@@ -94,7 +122,6 @@ const verifyRoles = (...allowedRoles) => {
           .status(404)
           .send({ success: false, message: "User not found" });
       }
-
       if (!allowedRoles.includes(user.role)) {
         return res.status(403).send({
           success: false,
@@ -102,7 +129,6 @@ const verifyRoles = (...allowedRoles) => {
             "Forbidden Access: You do not have permission for this resource",
         });
       }
-
       next();
     } catch (error) {
       res
@@ -115,20 +141,19 @@ const verifyRoles = (...allowedRoles) => {
 const verifyOwner = (req, res, next) => {
   const requestedEmail = req.params.email || req.query.email || req.body.email;
   const decodedEmail = req.decoded_email;
-
   if (!requestedEmail) {
     return res
       .status(400)
       .send({ success: false, message: "Email parameter is required" });
   }
-
   if (requestedEmail !== decodedEmail) {
-    return res.status(403).send({
-      success: false,
-      message: "Forbidden: You cannot access other user's data",
-    });
+    return res
+      .status(403)
+      .send({
+        success: false,
+        message: "Forbidden: You cannot access other user's data",
+      });
   }
-
   next();
 };
 
@@ -172,16 +197,14 @@ const verifyHubManagerToken = async (req, res, next) => {
   next();
 };
 
-// stripe
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 
-/* ---- MONGODB SETUP -----*/
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.ab3rgue.mongodb.net/?appName=Cluster0`;
 
 const client = new MongoClient(uri, {
   maxPoolSize: 200,
   minPoolSize: 10,
-  maxIdleTimeMS: 30000,
+  maxIdleTimeMS: 1000,
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
@@ -226,151 +249,100 @@ async function connectDB() {
   payoutsCollections = db.collection("payoutsCollections");
   hqPaymentsCollections = db.collection("hqPaymentsCollections");
 
-  // Create an index on the trackingLogsCollections for trackingID and createdAt
-  await trackingLogsCollections.createIndex({
-    trackingID: 1,
-    createdAt: -1,
-  });
-
-  //  User collection index for email to ensure uniqueness and improve query performance
-  await userCollections.createIndex(
-    {
-      email: 1,
-    },
-    { unique: true },
-  );
-
-  // User collection index for email and role to improve query performance for role-based queries
+  await trackingLogsCollections.createIndex({ trackingID: 1, createdAt: -1 });
+  await userCollections.createIndex({ email: 1 }, { unique: true });
   await userCollections.createIndex({ email: 1, role: 1 });
-
-  // 1. Manager Lookup
   await hubManagersCollection.createIndex({ email: 1 }, { unique: true });
-
-  // 2. Admin Filters (Region & District)
   await hubManagersCollection.createIndex({ region: 1, district: 1 });
-
-  // 1. Origin Search Index
   await parcelsCollections.createIndex({
     "serviceCenters.origin": 1,
     deliveryStatus: 1,
   });
-
-  // 2. Destination Search Index
   await parcelsCollections.createIndex({
     "serviceCenters.destination": 1,
     deliveryStatus: 1,
   });
-
   await parcelsCollections.createIndex({
     "senderInfo.area": 1,
     deliveryStatus: 1,
     inCity: 1,
   });
-
-  //
   await parcelsCollections.createIndex({
     "receiverInfo.area": 1,
     deliveryStatus: 1,
   });
-
   await parcelsCollections.createIndex({
     "deliveryRider.email": 1,
     deliveryStatus: 1,
     createdAt: -1,
   });
-
   await parcelsCollections.createIndex({
     "pickupRider.email": 1,
     deliveryStatus: 1,
     createdAt: -1,
   });
-
   await parcelsCollections.createIndex({
     "deliveryRider.email": 1,
     "deliveryRider.assignedAt": 1,
     deliveryStatus: 1,
   });
-
   await parcelsCollections.createIndex({
     "pickupRider.email": 1,
     "pickupRider.assignedAt": 1,
     deliveryStatus: 1,
   });
-
-  await ridersCollections.createIndex({
-    area: 1,
-    status: 1,
-    workStatus: 1,
-  });
-
+  await ridersCollections.createIndex({ area: 1, status: 1, workStatus: 1 });
   await ridersCollections.createIndex({ email: 1 });
-
   await ridersCollections.createIndex({
     area: 1,
     workStatus: 1,
     currentTasks: 1,
   });
-
   await merchantsCollections.createIndex({ area: 1 });
-
   await merchantsCollections.createIndex({ email: 1 });
-
-  // Parcels Collection Indexes
   await parcelsCollections.createIndex({
     "senderInfo.email": 1,
     deliveryStatus: 1,
     merchantRevenueStatus: 1,
   });
-
-  // Payouts Collection Indexes
   await payoutsCollections.createIndex({ email: 1, payoutStatus: 1 });
   await payoutsCollections.createIndex({ email: 1, requestedAt: -1 });
-
   await payoutsCollections.createIndex({ payoutStatus: 1, requestedAt: -1 });
-
   await parcelsCollections.createIndex({
     "senderInfo.email": 1,
     deliveryStatus: 1,
     createdAt: -1,
   });
-
-  //
   await parcelsCollections.createIndex({
     "senderInfo.email": 1,
     deliveryChargeStatus: 1,
     deliveryStatus: 1,
   });
-
   await parcelsCollections.createIndex({
     "senderInfo.email": 1,
     deliveryChargeStatus: 1,
     createdAt: -1,
   });
-
   await parcelsCollections.createIndex({
     "serviceCenters.destination": 1,
     deliveryStatus: 1,
     isDepositedToHQ: 1,
   });
-
   await parcelsCollections.createIndex({
     "serviceCenters.destination": 1,
     deliveryStatus: 1,
     createdAt: 1,
   });
-
   await parcelsCollections.createIndex({
     "serviceCenters.origin": 1,
     deliveryStatus: 1,
     createdAt: 1,
   });
-
   await hqPaymentsCollections.createIndex({
     hubName: 1,
     status: 1,
     createdAt: -1,
   });
-
   await parcelsCollections.createIndex({ deliveryStatus: 1 });
   await parcelsCollections.createIndex({
     status: 1,
@@ -396,7 +368,6 @@ async function connectDB() {
 /* ----- Helpers ------ */
 const logTracking = async (parcel, status) => {
   const { trackingLogsCollections } = await connectDB();
-
   const log = {
     trackingID: parcel.trackingID,
     parcelName: parcel.parcelName,
@@ -407,9 +378,37 @@ const logTracking = async (parcel, status) => {
     details: `${status.split("-").join(" ")} for this parcel.`,
     createdAt: new Date(),
   };
-
   return await trackingLogsCollections.insertOne(log);
 };
+
+function invalidateParcelStatusChange({
+  trackingID,
+  senderEmail,
+  originHub,
+  destinationHub,
+  parcelId,
+}) {
+  if (trackingID) trackingCache.del(trackingID);
+  if (parcelId) parcelDetailCache.del(`parcel_${parcelId}`);
+  if (senderEmail) {
+    merchantParcelsCache.bump(senderEmail);
+    parcelsStatusWiseCache.bump(senderEmail);
+  }
+  if (originHub) {
+    incomingParcelsCache.del(`incoming_parcels_${originHub}`);
+    pickupCache.del(`pickup_parcels_${originHub}`);
+    sortingCache.del(`sorting_house_${originHub}`);
+    hubAgingCache.del(`hub_aging_status_${originHub}`);
+  }
+  if (destinationHub) {
+    incomingParcelsCache.del(`incoming_parcels_${destinationHub}`);
+    outForDeliveryCache.del(`out_for_delivery_${destinationHub}`);
+    hubDeliveredCache.del(`hub_delivered_${destinationHub}`);
+    sortingCache.del(`sorting_house_${destinationHub}`);
+    hubAgingCache.del(`hub_aging_status_${destinationHub}`);
+    hubEfficiencyCache.del(`hub_efficiency_flow_${destinationHub}`);
+  }
+}
 
 /* ---- EXPRESS ROUTES START HERE ----*/
 
@@ -419,9 +418,7 @@ app.get("/users", async (req, res) => {
     const searchText = req.query.searchText || "";
     const role = req.query.role || "";
 
-    const cacheKey = `users_search:${searchText}_role:${role}`;
-
-    const cachedData = usersCache.get(cacheKey);
+    const cachedData = usersCache.get("global", [searchText, role]);
     if (cachedData) {
       return res
         .status(200)
@@ -430,17 +427,13 @@ app.get("/users", async (req, res) => {
 
     const { userCollections } = await connectDB();
     const query = {};
-
     if (searchText) {
       query.$or = [
         { displayName: { $regex: searchText, $options: "i" } },
         { email: { $regex: searchText, $options: "i" } },
       ];
     }
-
-    if (role) {
-      query.role = role;
-    }
+    if (role) query.role = role;
 
     const result = await userCollections
       .find(query)
@@ -449,26 +442,19 @@ app.get("/users", async (req, res) => {
       .project({ email: 1, displayName: 1, role: 1 })
       .toArray();
 
-    usersCache.set(cacheKey, result);
-
+    usersCache.set("global", [searchText, role], result);
     res.status(200).send({ success: true, data: result, source: "database" });
   } catch (error) {
     res.status(500).send({ message: "Internal Server Error" });
   }
 });
 
-// Get user by email with caching
-app.get("/user/:email", verifyFireBaseToken, verifyOwner, async (req, res) => {
+app.get("/user/:email", async (req, res) => {
   try {
     const email = req.params.email;
-
-    // Check if the user data is already cached
     const cacheKey = `user_${email}`;
     const cachedUser = userCache.get(cacheKey);
-
-    if (cachedUser) {
-      return res.send(cachedUser);
-    }
+    if (cachedUser) return res.send(cachedUser);
 
     const { userCollections } = await connectDB();
     const user = await userCollections.findOne(
@@ -485,42 +471,31 @@ app.get("/user/:email", verifyFireBaseToken, verifyOwner, async (req, res) => {
         },
       },
     );
-
     if (!user) {
-      return res.status(404).send({
-        success: false,
-        message: "User not found in database",
-      });
+      return res
+        .status(404)
+        .send({ success: false, message: "User not found in database" });
     }
-
-    // Cache the user data for future requests
     userCache.set(cacheKey, user);
-
     res.send(user);
   } catch (error) {
     res.status(500).send({ success: false, error: "Internal Server Error" });
   }
 });
 
-//  Get user role by email with caching
 app.get(
   "/user/:email/role",
   verifyFireBaseToken,
   verifyOwner,
   async (req, res) => {
     try {
-      const cacheKey = `user_${req.params.email}`;
+      const cacheKey = `user_role_${req.params.email}`;
       const cachedRole = userRoleCache.get(cacheKey);
-
-      if (cachedRole) {
-        return res.send({ role: cachedRole });
-      }
+      if (cachedRole) return res.send({ role: cachedRole });
 
       const { userCollections } = await connectDB();
       const user = await userCollections.findOne({ email: req.params.email });
-
       userRoleCache.set(cacheKey, user.role);
-
       res.send({ role: user.role });
     } catch (error) {
       console.error("API Error Stack:", error);
@@ -532,22 +507,15 @@ app.get(
 app.patch("/users/update/:email", async (req, res) => {
   try {
     const { userCollections } = await connectDB();
+    const email = req.params.email;
     const result = await userCollections.updateOne(
-      { email: req.params.email },
-      {
-        $set: {
-          ...req.body,
-        },
-      },
+      { email },
+      { $set: { ...req.body } },
     );
 
-    if (typeof usersCache !== "undefined") {
-      usersCache.flushAll();
-    }
-
-    if (typeof userCache !== "undefined") {
-      userCache.flushAll();
-    }
+    userCache.del(`user_${email}`);
+    userRoleCache.del(`user_role_${email}`);
+    usersCache.bump("global");
 
     res.send(result);
   } catch (error) {
@@ -558,21 +526,12 @@ app.patch("/users/update/:email", async (req, res) => {
 app.post("/users", async (req, res) => {
   try {
     const { userCollections } = await connectDB();
-
     const user = req.body;
-
     const isExist = await userCollections.findOne({ email: user.email });
-
-    if (isExist) {
-      return res.send({ message: "User already exists" });
-    }
+    if (isExist) return res.send({ message: "User already exists" });
 
     const result = await userCollections.insertOne(user);
-
-    if (typeof usersCache !== "undefined") {
-      usersCache.flushAll();
-    }
-
+    usersCache.bump("global");
     res.send(result);
   } catch (err) {
     res.status(500).send({ error: err.message });
@@ -582,22 +541,15 @@ app.post("/users", async (req, res) => {
 app.patch("/users/verify-status/:email", async (req, res) => {
   try {
     const { userCollections } = await connectDB();
+    const email = req.params.email;
     const result = await userCollections.updateOne(
-      { email: req.params.email },
-      {
-        $set: {
-          isOnboarded: true,
-        },
-      },
+      { email },
+      { $set: { isOnboarded: true } },
     );
 
-    if (typeof usersCache !== "undefined") {
-      usersCache.flushAll();
-    }
-
-    if (typeof userCache !== "undefined") {
-      userCache.flushAll();
-    }
+    userCache.del(`user_${email}`);
+    userRoleCache.del(`user_role_${email}`);
+    usersCache.bump("global");
 
     res.send(result);
   } catch (error) {
@@ -615,49 +567,41 @@ app.patch(
       const { email, region, district, hubName } = data;
 
       const userFilter = { email: email };
-      const updateRole = {
-        $set: { role: "hub-manager" },
-      };
+      const updateRole = { $set: { role: "hub-manager" } };
       const updateResult = await userCollections.updateOne(
         userFilter,
         updateRole,
       );
 
       if (updateResult.modifiedCount === 0) {
-        return res.status(404).send({
-          success: false,
-          message: "User not found or role already updated",
-        });
+        return res
+          .status(404)
+          .send({
+            success: false,
+            message: "User not found or role already updated",
+          });
       }
 
       const userProfile = await userCollections.findOne({ email: email });
-
       const hubManagerDoc = {
         userId: userProfile._id,
         name: userProfile.displayName,
         email: email,
         photoURL: userProfile.photoURL || "",
-        region: region,
-        district: district,
-        hubName: hubName,
+        region,
+        district,
+        hubName,
         assignedAt: new Date(),
         status: "active",
       };
-
       const insertResult = await hubManagersCollection.insertOne(hubManagerDoc);
 
       if (insertResult.insertedId) {
-        if (typeof usersCache !== "undefined") {
-          usersCache.flushAll();
-        }
+        userCache.del(`user_${email}`);
+        userRoleCache.del(`user_role_${email}`);
+        usersCache.bump("global");
+        managerCache.bump("global");
 
-        if (typeof userCache !== "undefined") {
-          userCache.flushAll();
-        }
-
-        if (typeof managerCache !== "undefined") {
-          managerCache.flushAll();
-        }
         res.send({
           success: true,
           message: "User promoted and added to Hub Managers collection",
@@ -673,97 +617,70 @@ app.patch(
 );
 
 /* ---- Managers ---- */
-app.get(
-  "/users/hub-managers",
-  verifyFireBaseToken,
-  verifyRoles("admin", "hub-manager"),
-  async (req, res) => {
-    try {
-      const { region, district, email } = req.query;
+app.get("/users/hub-managers", async (req, res) => {
+  try {
+    const { region, district, email } = req.query;
+    const cachedData = managerCache.get("global", [
+      email || "all",
+      region || "all",
+      district || "all",
+    ]);
+    if (cachedData) return res.status(200).send(cachedData);
 
-      const cacheKey = `managers_${email || "all"}_${region || "all"}_${district || "all"}`;
-      const cachedData = managerCache.get(cacheKey);
-      if (cachedData) {
-        return res.status(200).send(cachedData);
-      }
+    let query = {};
+    if (email) query.email = email;
+    if (region) query.region = region;
+    if (district) query.district = district;
 
-      let query = {};
+    const result = await hubManagersCollection.find(query).toArray();
+    const finalData = email ? result[0] || null : result;
 
-      if (email) {
-        query.email = email;
-      }
+    managerCache.set(
+      "global",
+      [email || "all", region || "all", district || "all"],
+      finalData,
+    );
+    res.status(200).send(finalData);
+  } catch (error) {
+    console.error("Error fetching managers:", error);
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
 
-      if (region) {
-        query.region = region;
-      }
+app.get("/parcels/incoming/:hubName", async (req, res) => {
+  try {
+    const hubName = req.params.hubName;
+    const cacheKey = `incoming_parcels_${hubName}`;
+    const cachedData = incomingParcelsCache.get(cacheKey);
+    if (cachedData) return res.status(200).send(cachedData);
 
-      if (district) {
-        query.district = district;
-      }
-
-      const result = await hubManagersCollection.find(query).toArray();
-
-      managerCache.set(cacheKey, result);
-
-      res.status(200).send(result);
-    } catch (error) {
-      console.error("Error fetching managers:", error);
-      res.status(500).send({ message: "Internal Server Error" });
-    }
-  },
-);
-
-app.get(
-  "/parcels/incoming/:hubName",
-  verifyFireBaseToken,
-  verifyHubManagerToken,
-  async (req, res) => {
-    try {
-      const hubName = req.params.hubName;
-
-      const cacheKey = `incoming_parcels_${hubName}`;
-      const cachedData = parcelCache.get(cacheKey);
-      if (cachedData) {
-        return res.status(200).send(cachedData);
-      }
-
-      const { parcelsCollections } = await connectDB();
-      const query = {
-        $or: [
-          {
-            "serviceCenters.origin": hubName,
-            deliveryStatus: "parcel-created",
-          },
-
-          {
-            "serviceCenters.origin": hubName,
-            deliveryStatus: "assign-pickup-rider",
-          },
-
-          {
-            "serviceCenters.destination": hubName,
-            deliveryStatus: "in-transit",
-          },
-
-          {
-            "serviceCenters.origin": hubName,
-            deliveryStatus: "return-in-transit-to-origin",
-          },
-        ],
-      };
-
-      const result = await parcelsCollections.find(query).toArray();
-      parcelCache.set(cacheKey, result);
-
-      res.send(result);
-    } catch (error) {
-      res.status(500).send({
+    const { parcelsCollections } = await connectDB();
+    const query = {
+      $or: [
+        { "serviceCenters.origin": hubName, deliveryStatus: "parcel-created" },
+        {
+          "serviceCenters.origin": hubName,
+          deliveryStatus: "assign-pickup-rider",
+        },
+        { "serviceCenters.destination": hubName, deliveryStatus: "in-transit" },
+        {
+          "serviceCenters.origin": hubName,
+          deliveryStatus: "return-in-transit-to-origin",
+        },
+      ],
+    };
+    const result = await parcelsCollections.find(query).toArray();
+    incomingParcelsCache.set(cacheKey, result);
+    res.send(result);
+  } catch (error) {
+    res
+      .status(500)
+      .send({
         message: "Error fetching incoming parcels",
         error: error.message,
       });
-    }
-  },
-);
+  }
+});
 
 app.get(
   "/parcels/pickups/:hubName",
@@ -774,25 +691,23 @@ app.get(
       const hubName = req.params.hubName;
       const cacheKey = `pickup_parcels_${hubName}`;
       const cachedData = pickupCache.get(cacheKey);
-      if (cachedData) {
-        return res.status(200).send(cachedData);
-      }
+      if (cachedData) return res.status(200).send(cachedData);
 
       const { parcelsCollections } = await connectDB();
       const query = {
         "serviceCenters.origin": hubName,
         deliveryStatus: "picked-up",
       };
-
       const result = await parcelsCollections.find(query).toArray();
       pickupCache.set(cacheKey, result);
-
       res.send(result);
     } catch (error) {
-      res.status(500).send({
-        message: "Error fetching incoming parcels",
-        error: error.message,
-      });
+      res
+        .status(500)
+        .send({
+          message: "Error fetching incoming parcels",
+          error: error.message,
+        });
     }
   },
 );
@@ -804,16 +719,11 @@ app.get(
   async (req, res) => {
     try {
       const { hubName } = req.params;
-
       const cacheKey = `sorting_house_${hubName}`;
       const cachedData = sortingCache.get(cacheKey);
-      if (cachedData) {
-        return res.status(200).send(cachedData);
-      }
+      if (cachedData) return res.status(200).send(cachedData);
 
       const { parcelsCollections } = await connectDB();
-
-      // Some logic will be added here. Parcels return system.
       const dispatchList = await parcelsCollections
         .find({
           deliveryStatus: "reached-origin-warehouse",
@@ -821,7 +731,6 @@ app.get(
           inCity: false,
         })
         .toArray();
-
       const deliveryList = await parcelsCollections
         .find({
           $or: [
@@ -837,17 +746,13 @@ app.get(
         })
         .toArray();
 
-      sortingCache.set(cacheKey, {
+      const payload = {
         dispatchList,
         deliveryList,
         total: dispatchList.length + deliveryList.length,
-      });
-
-      res.send({
-        dispatchList,
-        deliveryList,
-        total: dispatchList.length + deliveryList.length,
-      });
+      };
+      sortingCache.set(cacheKey, payload);
+      res.send(payload);
     } catch (error) {
       res.status(500).send({ message: "Error sorting parcels" });
     }
@@ -861,20 +766,15 @@ app.get(
   async (req, res) => {
     try {
       const { hubName } = req.params;
-      const cacheKey = `out_for_delivery_${req.params.hubName}`;
+      const cacheKey = `out_for_delivery_${hubName}`;
       const cachedData = outForDeliveryCache.get(cacheKey);
-      if (cachedData) {
-        return res.status(200).send(cachedData);
-      }
+      if (cachedData) return res.status(200).send(cachedData);
 
       const { parcelsCollections } = await connectDB();
       const query = {
         "serviceCenters.destination": hubName,
-        deliveryStatus: {
-          $in: ["assign-delivery-rider", "hold"],
-        },
+        deliveryStatus: { $in: ["assign-delivery-rider", "hold"] },
       };
-
       const result = await parcelsCollections.find(query).toArray();
       outForDeliveryCache.set(cacheKey, result);
       res.send(result);
@@ -891,23 +791,19 @@ app.get(
   async (req, res) => {
     try {
       const { hubName } = req.params;
-      const cacheKey = `hub_delivered_${req.params.hubName}`;
+      const cacheKey = `hub_delivered_${hubName}`;
       const cachedData = hubDeliveredCache.get(cacheKey);
-      if (cachedData) {
-        return res.status(200).send(cachedData);
-      }
+      if (cachedData) return res.status(200).send(cachedData);
 
       const { parcelsCollections } = await connectDB();
       const query = {
         "serviceCenters.destination": hubName,
         deliveryStatus: "delivered",
       };
-
       const result = await parcelsCollections
         .find(query)
         .sort({ createdAt: -1 })
         .toArray();
-
       hubDeliveredCache.set(cacheKey, result);
       res.send(result);
     } catch (error) {
@@ -917,185 +813,133 @@ app.get(
 );
 
 /*---- Rider Related APIs Start ----*/
+app.get("/rider/:email", async (req, res) => {
+  try {
+    const email = req.params.email;
+    const cacheKey = `rider_${email}`;
+    const cachedData = riderCache.get(cacheKey);
+    if (cachedData) return res.status(200).send(cachedData);
 
-app.get(
-  "/rider/:email",
-  verifyFireBaseToken,
-  verifyRiderToken,
-  async (req, res) => {
-    try {
-      const email = req.params.email;
-      const cacheKey = `rider_${email}`;
-      const cachedData = riderCache.get(cacheKey);
-      if (cachedData) {
-        return res.status(200).send(cachedData);
-      }
-
-      const { ridersCollections, parcelsCollections } = await connectDB();
-      const riderData = await ridersCollections.findOne({ email: email });
-      if (!riderData) {
-        return res
-          .status(404)
-          .send({ success: false, message: "Rider not found in TradeCen" });
-      }
-
-      // Safe handling for active tasks
-      const assignedParcels = riderData.activeTasks || [];
-      const holdUpParcels = assignedParcels.filter(
-        (parcel) => parcel && parcel.isHold === true,
-      );
-
-      const startOfToday = new Date();
-      startOfToday.setHours(0, 0, 0, 0);
-      const endOfToday = new Date();
-      endOfToday.setHours(23, 59, 59, 999);
-
-      const allHandledParcels = await parcelsCollections
-        .find({
-          $or: [
-            { "deliveryRider.email": email },
-            { "pickupRider.email": email },
-          ],
-          deliveryStatus: {
-            $in: ["picked-up", "delivered"],
-          },
-        })
-        .sort({ createdAt: -1 })
-        .toArray();
-
-      const todaysParcels = await parcelsCollections
-        .find({
-          $or: [
-            {
-              "deliveryRider.email": email,
-              "deliveryRider.assignedAt": {
-                $gte: startOfToday,
-                $lte: endOfToday,
-              },
-            },
-            {
-              "pickupRider.email": email,
-              "pickupRider.assignedAt": {
-                $gte: startOfToday,
-                $lte: endOfToday,
-              },
-            },
-          ],
-          deliveryStatus: {
-            $in: [
-              "delivered",
-              "assign-pickup-rider",
-              "picked-up",
-              "assign-delivery-rider",
-            ],
-          },
-        })
-        .toArray();
-
-      // Today's
-      const todayDeliveryCompleteParcels = (todaysParcels || []).filter(
-        (parcel) => parcel.deliveryStatus === "delivered",
-      );
-
-      const todayPickUpCompleteParcels = (todaysParcels || []).filter(
-        (parcel) => parcel.deliveryStatus === "picked-up",
-      );
-
-      // All
-      const allDeliveryCompleteParcels = (allHandledParcels || []).filter(
-        (parcel) => parcel.deliveryStatus === "delivered",
-      );
-
-      const allPickUpCompleteParcels = (allHandledParcels || []).filter(
-        (parcel) => parcel.deliveryStatus === "picked-up",
-      );
-
-      const deliveredParcels = await parcelsCollections
-        .find({
-          "deliveryRider.email": email,
-          deliveryStatus: "delivered",
-          deliveredAt: {
-            $gte: startOfToday,
-            $lte: endOfToday,
-          },
-        })
-        .sort({ deliveredAt: -1 })
-        .toArray();
-
-      const totalCollectedAmount =
-        deliveredParcels.length > 0
-          ? deliveredParcels.reduce(
-            (total, parcel) => total + (Number(parcel.codAmount) || 0),
-            0,
-          )
-          : 0;
-
-      const totalAssign = Number(riderData.totalAssign) || 0;
-      const successfullyComplete = Number(riderData.successfullyComplete) || 0;
-      const conversionRate =
-        totalAssign > 0
-          ? Math.round((successfullyComplete / totalAssign) * 100)
-          : 0;
-
-      const loadHandled =
-        todayDeliveryCompleteParcels.reduce(
-          (total, parcel) => total + (Number(parcel.parcelWeight) || 0),
-          0,
-        ) +
-        todayPickUpCompleteParcels.reduce(
-          (total, parcel) => total + (Number(parcel.parcelWeight) || 0),
-          0,
-        );
-
-      riderCache.set(cacheKey, {
-        success: true,
-        riderData,
-        allHandledParcels,
-        assignedParcels,
-        holdUpParcels,
-        deliveredParcels,
-        totalCollectedAmount,
-        conversionRate,
-        loadHandled,
-        todaysParcels,
-        allDeliveryCompleteParcels,
-        allPickUpCompleteParcels,
-        todaysParcelCount: todaysParcels.length || 0,
-        todayPickUpCompleteParcels,
-        todayDeliveryCompleteParcels,
-        todaysCompleteTotal:
-          todayPickUpCompleteParcels.length +
-          todayDeliveryCompleteParcels.length || 0,
-      });
-
-      res.send({
-        success: true,
-        riderData,
-        allHandledParcels,
-        assignedParcels,
-        holdUpParcels,
-        deliveredParcels,
-        totalCollectedAmount,
-        conversionRate,
-        loadHandled,
-        todaysParcels,
-        allDeliveryCompleteParcels,
-        allPickUpCompleteParcels,
-        todaysParcelCount: todaysParcels.length || 0,
-        todayPickUpCompleteParcels,
-        todayDeliveryCompleteParcels,
-        todaysCompleteTotal:
-          todayPickUpCompleteParcels.length +
-          todayDeliveryCompleteParcels.length || 0,
-      });
-    } catch (error) {
-      console.error("Rider API Error:", error);
-      res
-        .status(500)
-        .send({ success: false, message: "Internal Server Error" });
+    const { ridersCollections, parcelsCollections } = await connectDB();
+    const riderData = await ridersCollections.findOne({ email: email });
+    if (!riderData) {
+      return res
+        .status(404)
+        .send({ success: false, message: "Rider not found in TradeCen" });
     }
-  },
-);
+
+    const assignedParcels = riderData.activeTasks || [];
+    const holdUpParcels = assignedParcels.filter((p) => p && p.isHold === true);
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = new Date();
+    endOfToday.setHours(23, 59, 59, 999);
+
+    const allHandledParcels = await parcelsCollections
+      .find({
+        $or: [{ "deliveryRider.email": email }, { "pickupRider.email": email }],
+        deliveryStatus: { $in: ["picked-up", "delivered"] },
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    const todaysParcels = await parcelsCollections
+      .find({
+        $or: [
+          {
+            "deliveryRider.email": email,
+            "deliveryRider.assignedAt": {
+              $gte: startOfToday,
+              $lte: endOfToday,
+            },
+          },
+          {
+            "pickupRider.email": email,
+            "pickupRider.assignedAt": { $gte: startOfToday, $lte: endOfToday },
+          },
+        ],
+        deliveryStatus: {
+          $in: [
+            "delivered",
+            "assign-pickup-rider",
+            "picked-up",
+            "assign-delivery-rider",
+          ],
+        },
+      })
+      .toArray();
+
+    const todayDeliveryCompleteParcels = (todaysParcels || []).filter(
+      (p) => p.deliveryStatus === "delivered",
+    );
+    const todayPickUpCompleteParcels = (todaysParcels || []).filter(
+      (p) => p.deliveryStatus === "picked-up",
+    );
+    const allDeliveryCompleteParcels = (allHandledParcels || []).filter(
+      (p) => p.deliveryStatus === "delivered",
+    );
+    const allPickUpCompleteParcels = (allHandledParcels || []).filter(
+      (p) => p.deliveryStatus === "picked-up",
+    );
+
+    const deliveredParcels = await parcelsCollections
+      .find({
+        "deliveryRider.email": email,
+        deliveryStatus: "delivered",
+        deliveredAt: { $gte: startOfToday, $lte: endOfToday },
+      })
+      .sort({ deliveredAt: -1 })
+      .toArray();
+
+    const totalCollectedAmount = deliveredParcels.reduce(
+      (t, p) => t + (Number(p.codAmount) || 0),
+      0,
+    );
+    const totalAssign = Number(riderData.totalAssign) || 0;
+    const successfullyComplete = Number(riderData.successfullyComplete) || 0;
+    const conversionRate =
+      totalAssign > 0
+        ? Math.round((successfullyComplete / totalAssign) * 100)
+        : 0;
+    const loadHandled =
+      todayDeliveryCompleteParcels.reduce(
+        (t, p) => t + (Number(p.parcelWeight) || 0),
+        0,
+      ) +
+      todayPickUpCompleteParcels.reduce(
+        (t, p) => t + (Number(p.parcelWeight) || 0),
+        0,
+      );
+
+    const payload = {
+      success: true,
+      riderData,
+      allHandledParcels,
+      assignedParcels,
+      holdUpParcels,
+      deliveredParcels,
+      totalCollectedAmount,
+      conversionRate,
+      loadHandled,
+      todaysParcels,
+      allDeliveryCompleteParcels,
+      allPickUpCompleteParcels,
+      todaysParcelCount: todaysParcels.length || 0,
+      todayPickUpCompleteParcels,
+      todayDeliveryCompleteParcels,
+      todaysCompleteTotal:
+        todayPickUpCompleteParcels.length +
+          todayDeliveryCompleteParcels.length || 0,
+    };
+
+    riderCache.set(cacheKey, payload);
+    res.send(payload);
+  } catch (error) {
+    console.error("Rider API Error:", error);
+    res.status(500).send({ success: false, message: "Internal Server Error" });
+  }
+});
 
 app.patch("/rider/status/:email", async (req, res) => {
   try {
@@ -1103,23 +947,20 @@ app.patch("/rider/status/:email", async (req, res) => {
     const { workStatus } = req.body;
     const { email } = req.params;
 
+    const rider = await ridersCollections.findOne({ email });
     const result = await ridersCollections.updateOne(
-      { email: email },
-      {
-        $set: {
-          workStatus: workStatus,
-        },
-      },
+      { email },
+      { $set: { workStatus } },
     );
 
     if (result.modifiedCount > 0 || result.matchedCount > 0) {
-      if (typeof ridersCache !== "undefined") {
-        ridersCache.flushAll();
-      }
-
-      if (typeof availableRidersCache !== "undefined") {
-        availableRidersCache.flushAll();
-      }
+      riderCache.del(`rider_${email}`);
+      const area = rider?.area || "global";
+      ridersCache.bump(area);
+      if (rider?.area)
+        availableRidersCache.del(
+          `available_riders_${rider.area.toLowerCase()}`,
+        );
 
       return res.send({
         success: true,
@@ -1144,16 +985,11 @@ app.patch(
       const { ridersCollections, parcelsCollections } = await connectDB();
       const { riderId, parcelId } = req.body;
 
-      const result = await ridersCollections.updateOne(
+      await ridersCollections.updateOne(
         { _id: new ObjectId(riderId) },
-        {
-          $set: { "activeTasks.$[elem].isHold": true },
-        },
-        {
-          arrayFilters: [{ "elem.parcelId": new ObjectId(parcelId) }],
-        },
+        { $set: { "activeTasks.$[elem].isHold": true } },
+        { arrayFilters: [{ "elem.parcelId": new ObjectId(parcelId) }] },
       );
-
       await parcelsCollections.updateOne(
         { _id: new ObjectId(parcelId) },
         { $set: { deliveryStatus: "hold" } },
@@ -1164,20 +1000,19 @@ app.patch(
       });
       await logTracking(parcelData, "hold-up");
 
-      if (typeof parcelsCache !== "undefined") {
-        parcelsCache.flushAll();
-      }
-
-      if (typeof parcelsStatusWiseCache !== "undefined") {
-        parcelsStatusWiseCache.flushAll();
-      }
-
-      if (typeof ridersCache !== "undefined") {
-        ridersCache.flushAll();
-      }
-
-      if (typeof hubAgingCache !== "undefined") {
-        hubAgingCache.flushAll();
+      invalidateParcelStatusChange({
+        trackingID: parcelData.trackingID,
+        senderEmail: parcelData.senderInfo?.email,
+        originHub: parcelData.serviceCenters?.origin,
+        destinationHub: parcelData.serviceCenters?.destination,
+        parcelId,
+      });
+      const rider = await ridersCollections.findOne({
+        _id: new ObjectId(riderId),
+      });
+      if (rider) {
+        riderCache.del(`rider_${rider.email}`);
+        ridersCache.bump(rider.area || "global");
       }
 
       res
@@ -1196,35 +1031,23 @@ app.post("/riders", async (req, res) => {
     const { ridersCollections, userCollections } = await connectDB();
     const newRider = req.body;
     const isExist = await ridersCollections.findOne({ email: newRider.email });
-    if (isExist) {
+    if (isExist)
       return res.send({ message: "This email already used for rider!" });
-    }
-    
+
     const result = await ridersCollections.insertOne(newRider);
-    const userRes = await userCollections.updateOne(
+    await userCollections.updateOne(
       { email: newRider.email },
-      {
-        $set: {
-          role: "pending-rider",
-        },
-      },
+      { $set: { role: "pending-rider" } },
     );
 
-    if (typeof ridersCache !== "undefined") {
-      ridersCache.flushAll();
-    }
-
-    if (typeof usersCache !== "undefined") {
-      usersCache.flushAll();
-    }
-
-    if (typeof userCache !== "undefined") {
-      userCache.flushAll();
-    }
-
-    if (typeof availableRidersCache !== "undefined") {
-      availableRidersCache.flushAll();
-    }
+    userCache.del(`user_${newRider.email}`);
+    userRoleCache.del(`user_role_${newRider.email}`);
+    usersCache.bump("global");
+    ridersCache.bump(newRider.area || "global");
+    if (newRider.area)
+      availableRidersCache.del(
+        `available_riders_${newRider.area.toLowerCase()}`,
+      );
 
     res.send(result);
   } catch (error) {
@@ -1232,66 +1055,41 @@ app.post("/riders", async (req, res) => {
   }
 });
 
-// app.get("/riders", async (req, res) => {
-//   try {
-//     const { ridersCollections } = await connectDB();
-//     const status = req.query.status;
-//     let query = {};
-
-//     if (status) {
-//       query = { status: status };
-//     }
-
-//     const result = await ridersCollections.find(query).toArray();
-
-//     res.status(200).send(result);
-//   } catch (error) {
-//     console.error("Error fetching riders:", error);
-//     res.status(500).send({ message: "Internal Server Error" });
-//   }
-// });
-
-app.get("/riders",
+app.get(
+  "/riders",
   verifyFireBaseToken,
-    verifyRoles("admin", "hub-manager", "rider"),
-    async (req, res) => {
+  verifyRoles("admin", "hub-manager", "rider"),
+  async (req, res) => {
     try {
       const { status, workStatus, email, area } = req.query;
-      const cacheKey = `riders_${status || "all"}_${workStatus || "all"}_${email || "all"}_${area || "all"}`;
-
-      const cachedData = ridersCache.get(cacheKey);
-      if (cachedData) {
-        return res.status(200).send(cachedData);
-      }
+      const owner = area || "global";
+      const cachedData = ridersCache.get(owner, [
+        status || "all",
+        workStatus || "all",
+        email || "all",
+      ]);
+      if (cachedData) return res.status(200).send(cachedData);
 
       const { ridersCollections } = await connectDB();
       let query = {};
-      if (status) {
-        query.status = status;
-      }
-
-      if (workStatus) {
-        query.workStatus = workStatus;
-      }
-
-      if (email) {
-        query.email = email;
-      }
-
-      if (area) {
-        query.area = area;
-      }
+      if (status) query.status = status;
+      if (workStatus) query.workStatus = workStatus;
+      if (email) query.email = email;
+      if (area) query.area = area;
 
       const result = await ridersCollections.find(query).toArray();
-
-      ridersCache.set(cacheKey, result);
-
+      ridersCache.set(
+        owner,
+        [status || "all", workStatus || "all", email || "all"],
+        result,
+      );
       res.status(200).send(result);
     } catch (error) {
       console.error("Error fetching riders:", error);
       res.status(500).send({ message: "Internal Server Error" });
     }
-  });
+  },
+);
 
 app.get(
   "/riders/available/:areaName",
@@ -1300,23 +1098,17 @@ app.get(
   async (req, res) => {
     try {
       const { areaName } = req.params;
-
       const cacheKey = `available_riders_${areaName.toLowerCase()}`;
       const cachedRiders = availableRidersCache.get(cacheKey);
-      if (cachedRiders) {
-        return res.status(200).send(cachedRiders);
-      }
+      if (cachedRiders) return res.status(200).send(cachedRiders);
 
       const { ridersCollections } = await connectDB();
-
       const query = {
         area: areaName,
         workStatus: "available",
         currentTasks: { $lt: 10 },
       };
-
       const riders = await ridersCollections.find(query).toArray();
-
       availableRidersCache.set(cacheKey, riders);
       res.status(200).send(riders);
     } catch (error) {
@@ -1337,48 +1129,29 @@ app.patch(
       const id = req.params.id;
       const { status, workStatus, email } = req.body;
 
-      const riderFilter = { _id: new ObjectId(id) };
-      const riderUpdate = {
-        $set: {
-          status: status,
-          workStatus: workStatus,
-          updatedAt: new Date(),
-        },
-      };
-
       const riderResult = await ridersCollections.updateOne(
-        riderFilter,
-        riderUpdate,
+        { _id: new ObjectId(id) },
+        { $set: { status, workStatus, updatedAt: new Date() } },
       );
 
       if (riderResult.modifiedCount > 0) {
-        const userFilter = { email: email };
-        const userUpdate = {
-          $set: {
-            role: "rider",
-          },
-        };
-
         const userResult = await userCollections.updateOne(
-          userFilter,
-          userUpdate,
+          { email },
+          { $set: { role: "rider" } },
         );
+        const rider = await ridersCollections.findOne({
+          _id: new ObjectId(id),
+        });
 
-        if (typeof ridersCache !== "undefined") {
-          ridersCache.flushAll();
-        }
-
-        if (typeof availableRidersCache !== "undefined") {
-          availableRidersCache.flushAll();
-        }
-
-        if (typeof usersCache !== "undefined") {
-          usersCache.flushAll();
-        }
-
-        if (typeof userCache !== "undefined") {
-          userCache.flushAll();
-        }
+        userCache.del(`user_${email}`);
+        userRoleCache.del(`user_role_${email}`);
+        riderCache.del(`rider_${email}`);
+        ridersCache.bump(rider?.area || "global");
+        if (rider?.area)
+          availableRidersCache.del(
+            `available_riders_${rider.area.toLowerCase()}`,
+          );
+        usersCache.bump("global");
 
         res.send({
           success: true,
@@ -1439,7 +1212,7 @@ app.patch(
           $push: {
             activeTasks: {
               parcelId: new ObjectId(parcelId),
-              trackingID: trackingID,
+              trackingID,
               parcelName: parcelData.parcelName,
               codAmount: parcelData.codAmount,
               pickupLocation: parcelData.senderInfo.address,
@@ -1453,25 +1226,23 @@ app.patch(
       );
 
       if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
-        if (typeof parcelsCache !== "undefined") {
-          parcelsCache.flushAll();
-        }
+        invalidateParcelStatusChange({
+          trackingID: parcelData.trackingID,
+          senderEmail: parcelData.senderInfo?.email,
+          originHub: parcelData.serviceCenters?.origin,
+          destinationHub: parcelData.serviceCenters?.destination,
+          parcelId,
+        });
+        const rider = await ridersCollections.findOne({
+          _id: new ObjectId(riderId),
+        });
+        riderCache.del(`rider_${riderEmail}`);
+        ridersCache.bump(rider?.area || "global");
+        if (rider?.area)
+          availableRidersCache.del(
+            `available_riders_${rider.area.toLowerCase()}`,
+          );
 
-        if (typeof parcelsStatusWiseCache !== "undefined") {
-          parcelsStatusWiseCache.flushAll();
-        }
-
-        if (typeof trackingCache !== "undefined") {
-          trackingCache.flushAll();
-        }
-
-        if (typeof ridersCache !== "undefined") {
-          ridersCache.flushAll();
-        }
-
-        if (typeof availableRidersCache !== "undefined") {
-          availableRidersCache.flushAll();
-        }
         res
           .status(200)
           .send({ success: true, message: "Rider assigned successfully" });
@@ -1519,6 +1290,7 @@ app.patch(
         },
       );
       await logTracking(parcelData, "assign-delivery-rider");
+
       const riderUpdate = await ridersCollections.updateOne(
         { _id: new ObjectId(riderId) },
         {
@@ -1526,7 +1298,7 @@ app.patch(
           $push: {
             activeTasks: {
               parcelId: new ObjectId(parcelId),
-              trackingID: trackingID,
+              trackingID,
               parcelName: parcelData.parcelName,
               codAmount: parcelData.codAmount,
               deliveryLocation: parcelData.receiverInfo.address,
@@ -1541,25 +1313,23 @@ app.patch(
       );
 
       if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
-        if (typeof parcelsCache !== "undefined") {
-          parcelsCache.flushAll();
-        }
-
-        if (typeof parcelsStatusWiseCache !== "undefined") {
-          parcelsStatusWiseCache.flushAll();
-        }
-
-        if (typeof trackingCache !== "undefined") {
-          trackingCache.flushAll();
-        }
-
-        if (typeof ridersCache !== "undefined") {
-          ridersCache.flushAll();
-        }
-
-        if (typeof availableRidersCache !== "undefined") {
-          availableRidersCache.flushAll();
-        }
+        invalidateParcelStatusChange({
+          trackingID: parcelData.trackingID,
+          senderEmail: parcelData.senderInfo?.email,
+          originHub: parcelData.serviceCenters?.origin,
+          destinationHub: parcelData.serviceCenters?.destination,
+          parcelId,
+        });
+        const rider = await ridersCollections.findOne({
+          _id: new ObjectId(riderId),
+        });
+        riderCache.del(`rider_${riderEmail}`); // 💡 targeted
+        ridersCache.bump(rider?.area || "global");
+        if (rider?.area)
+          availableRidersCache.del(
+            `available_riders_${rider.area.toLowerCase()}`,
+          );
+        managerCache.bump("global");
 
         res
           .status(200)
@@ -1597,7 +1367,6 @@ app.patch("/parcels/assign-return-delivery", async (req, res) => {
         },
       },
     );
-
     await logTracking(parcelData, "assign-return-rider");
 
     const riderUpdate = await ridersCollections.updateOne(
@@ -1607,7 +1376,7 @@ app.patch("/parcels/assign-return-delivery", async (req, res) => {
         $push: {
           activeTasks: {
             parcelId: new ObjectId(parcelId),
-            trackingID: trackingID,
+            trackingID,
             parcelName: parcelData.parcelName,
             codAmount: parcelData.codAmount,
             deliveryLocation: parcelData.receiverInfo.address,
@@ -1621,25 +1390,29 @@ app.patch("/parcels/assign-return-delivery", async (req, res) => {
     );
 
     if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
-      if (typeof parcelsCache !== "undefined") {
-        parcelsCache.flushAll();
+      invalidateParcelStatusChange({
+        trackingID: parcelData.trackingID,
+        senderEmail: parcelData.senderInfo?.email,
+        originHub: parcelData.serviceCenters?.origin,
+        destinationHub: parcelData.serviceCenters?.destination,
+        parcelId,
+      });
+
+      const originHub = parcelData.serviceCenters?.origin;
+      if (originHub && typeof returnWarehouseCache !== "undefined") {
+        const cacheKey = `return_warehouse_${originHub.toLowerCase()}`;
+        returnWarehouseCache.del(cacheKey);
       }
 
-      if (typeof parcelsStatusWiseCache !== "undefined") {
-        parcelsStatusWiseCache.flushAll();
-      }
-
-      if (typeof trackingCache !== "undefined") {
-        trackingCache.flushAll();
-      }
-
-      if (typeof ridersCache !== "undefined") {
-        ridersCache.flushAll();
-      }
-
-      if (typeof availableRidersCache !== "undefined") {
-        availableRidersCache.flushAll();
-      }
+      const rider = await ridersCollections.findOne({
+        _id: new ObjectId(riderId),
+      });
+      riderCache.del(`rider_${riderEmail}`);
+      ridersCache.bump(rider?.area || "global");
+      if (rider?.area)
+        availableRidersCache.del(
+          `available_riders_${rider.area.toLowerCase()}`,
+        );
 
       res
         .status(200)
@@ -1656,10 +1429,9 @@ app.patch("/riders/complete-return-delivered/update", async (req, res) => {
   try {
     const { riderId, parcelId, trackingID } = req.body;
     if (!riderId || !parcelId) {
-      return res.status(400).send({
-        success: false,
-        message: "Missing riderId or parcelId",
-      });
+      return res
+        .status(400)
+        .send({ success: false, message: "Missing riderId or parcelId" });
     }
     const { parcelsCollections, ridersCollections } = await connectDB();
 
@@ -1673,20 +1445,20 @@ app.patch("/riders/complete-return-delivered/update", async (req, res) => {
         },
       },
     );
-
     if (parcelUpdateResult.modifiedCount === 0) {
-      return res.status(404).send({
-        success: false,
-        message: "Parcel not found or already updated",
-      });
+      return res
+        .status(404)
+        .send({
+          success: false,
+          message: "Parcel not found or already updated",
+        });
     }
 
     const parcelData = await parcelsCollections.findOne({
       _id: new ObjectId(parcelId),
     });
     await logTracking(parcelData, "returned-to-merchant");
-
-    const riderUpdateResult = await ridersCollections.updateOne(
+    await ridersCollections.updateOne(
       { _id: new ObjectId(riderId) },
       {
         $inc: { currentTasks: -1 },
@@ -1694,24 +1466,23 @@ app.patch("/riders/complete-return-delivered/update", async (req, res) => {
       },
     );
 
-    if (typeof parcelsCache !== "undefined") {
-      parcelsCache.flushAll();
-    }
-
-    if (typeof parcelsStatusWiseCache !== "undefined") {
-      parcelsStatusWiseCache.flushAll();
-    }
-
-    if (typeof trackingCache !== "undefined") {
-      trackingCache.flushAll();
-    }
-
-    if (typeof ridersCache !== "undefined") {
-      ridersCache.flushAll();
-    }
-
-    if (typeof availableRidersCache !== "undefined") {
-      availableRidersCache.flushAll();
+    invalidateParcelStatusChange({
+      trackingID: parcelData.trackingID,
+      senderEmail: parcelData.senderInfo?.email,
+      originHub: parcelData.serviceCenters?.origin,
+      destinationHub: parcelData.serviceCenters?.destination,
+      parcelId,
+    });
+    const rider = await ridersCollections.findOne({
+      _id: new ObjectId(riderId),
+    });
+    if (rider) {
+      riderCache.del(`rider_${rider.email}`);
+      ridersCache.bump(rider.area || "global");
+      if (rider.area)
+        availableRidersCache.del(
+          `available_riders_${rider.area.toLowerCase()}`,
+        );
     }
 
     res.send({
@@ -1721,10 +1492,7 @@ app.patch("/riders/complete-return-delivered/update", async (req, res) => {
     });
   } catch (error) {
     console.error("Error completing return delivery:", error);
-    res.status(500).send({
-      success: false,
-      message: "Internal server error",
-    });
+    res.status(500).send({ success: false, message: "Internal server error" });
   }
 });
 
@@ -1746,7 +1514,6 @@ app.patch(
           },
         },
       );
-
       const parcel = await parcelsCollections.findOne({
         _id: new ObjectId(parcelId),
       });
@@ -1760,24 +1527,23 @@ app.patch(
         },
       );
 
-      if (typeof parcelsCache !== "undefined") {
-        parcelsCache.flushAll();
-      }
-
-      if (typeof parcelsStatusWiseCache !== "undefined") {
-        parcelsStatusWiseCache.flushAll();
-      }
-
-      if (typeof trackingCache !== "undefined") {
-        trackingCache.flushAll();
-      }
-
-      if (typeof ridersCache !== "undefined") {
-        ridersCache.flushAll();
-      }
-
-      if (typeof availableRidersCache !== "undefined") {
-        availableRidersCache.flushAll();
+      invalidateParcelStatusChange({
+        trackingID: parcel.trackingID,
+        senderEmail: parcel.senderInfo?.email,
+        originHub: parcel.serviceCenters?.origin,
+        destinationHub: parcel.serviceCenters?.destination,
+        parcelId,
+      });
+      const rider = await ridersCollections.findOne({
+        _id: new ObjectId(riderId),
+      });
+      if (rider) {
+        riderCache.del(`rider_${rider.email}`);
+        ridersCache.bump(rider.area || "global");
+        if (rider.area)
+          availableRidersCache.del(
+            `available_riders_${rider.area.toLowerCase()}`,
+          );
       }
 
       res.send({ success: true, result });
@@ -1806,28 +1572,20 @@ app.patch("/riders/return-req/update", async (req, res) => {
         },
       },
     );
-
     const parcel = await parcelsCollections.findOne({
       _id: new ObjectId(parcelId),
     });
-
     const hubName = parcel?.receiverInfo?.area;
-
     await logTracking(parcel, "return-requested");
 
     await ridersCollections.updateOne(
       { _id: new ObjectId(riderId) },
       {
         $inc: { currentTasks: -1 },
-        $pull: {
-          activeTasks: { parcelId: new ObjectId(parcelId) },
-        },
-        $push: {
-          returnLedger: { ...parcel, requestedAt: new Date() },
-        },
+        $pull: { activeTasks: { parcelId: new ObjectId(parcelId) } },
+        $push: { returnLedger: { ...parcel, requestedAt: new Date() } },
       },
     );
-
     await hubManagersCollection.updateOne(
       { hubName: hubName },
       {
@@ -1841,29 +1599,25 @@ app.patch("/riders/return-req/update", async (req, res) => {
       },
     );
 
-    if (typeof parcelsCache !== "undefined") {
-      parcelsCache.flushAll();
+    invalidateParcelStatusChange({
+      trackingID: parcel.trackingID,
+      senderEmail: parcel.senderInfo?.email,
+      originHub: parcel.serviceCenters?.origin,
+      destinationHub: parcel.serviceCenters?.destination,
+      parcelId,
+    });
+    const rider = await ridersCollections.findOne({
+      _id: new ObjectId(riderId),
+    });
+    if (rider) {
+      riderCache.del(`rider_${rider.email}`);
+      ridersCache.bump(rider.area || "global");
+      if (rider.area)
+        availableRidersCache.del(
+          `available_riders_${rider.area.toLowerCase()}`,
+        );
     }
-
-    if (typeof parcelsStatusWiseCache !== "undefined") {
-      parcelsStatusWiseCache.flushAll();
-    }
-
-    if (typeof trackingCache !== "undefined") {
-      trackingCache.flushAll();
-    }
-
-    if (typeof ridersCache !== "undefined") {
-      ridersCache.flushAll();
-    }
-
-    if (typeof availableRidersCache !== "undefined") {
-      availableRidersCache.flushAll();
-    }
-
-    if (typeof managerCache !== "undefined") {
-      managerCache.flushAll();
-    }
+    managerCache.bump("global");
 
     res.send({
       success: true,
@@ -1880,7 +1634,6 @@ app.patch("/parcels/return-hub/received/:parcelId", async (req, res) => {
   try {
     const { parcelId } = req.params;
     const { managerEmail } = req.body;
-
     const { hubManagersCollection, parcelsCollections, ridersCollections } =
       await connectDB();
 
@@ -1889,17 +1642,17 @@ app.patch("/parcels/return-hub/received/:parcelId", async (req, res) => {
         email: managerEmail,
         $or: [{ "returnReq._id": new ObjectId(parcelId) }],
       },
-      {
-        $set: { "returnReq.$.isHubReceived": true },
-      },
+      { $set: { "returnReq.$.isHubReceived": true } },
     );
-    managerCache.flushAll();
+    managerCache.bump("global");
 
     if (managerUpdate.matchedCount === 0) {
-      return res.status(404).send({
-        success: false,
-        message: "Parcel not found in Hub Manager's return request ledger.",
-      });
+      return res
+        .status(404)
+        .send({
+          success: false,
+          message: "Parcel not found in Hub Manager's return request ledger.",
+        });
     }
 
     const parcel = await parcelsCollections.findOne({
@@ -1920,19 +1673,20 @@ app.patch("/parcels/return-hub/received/:parcelId", async (req, res) => {
     );
 
     const riderEmail = parcel?.deliveryRider?.email;
-
     if (riderEmail) {
       await ridersCollections.updateOne(
         { email: riderEmail },
-        {
-          $pull: {
-            returnLedger: {
-              _id: new ObjectId(parcelId),
-            },
-          },
-        },
+        { $pull: { returnLedger: { _id: new ObjectId(parcelId) } } },
       );
+      riderCache.del(`rider_${riderEmail}`);
     }
+    invalidateParcelStatusChange({
+      trackingID: parcel.trackingID,
+      senderEmail: parcel.senderInfo?.email,
+      originHub: parcel.serviceCenters?.origin,
+      destinationHub: parcel.serviceCenters?.destination,
+      parcelId,
+    });
 
     res.send({
       success: true,
@@ -1962,42 +1716,28 @@ app.patch("/hub/dispatch-return-to-origin/:parcelId", async (req, res) => {
       },
       { returnDocument: "after" },
     );
-
     if (!updatedParcel) {
-      return res.status(404).send({
-        success: false,
-        message: "Parcel not found in warehouse registry.",
-      });
+      return res
+        .status(404)
+        .send({
+          success: false,
+          message: "Parcel not found in warehouse registry.",
+        });
     }
-
     await logTracking(updatedParcel, "dispatched-back-to-origin-warehouse");
-
     await hubManagersCollection.updateOne(
       { email: managerEmail },
-      {
-        $pull: { returnReq: { _id: new ObjectId(parcelId) } },
-      },
+      { $pull: { returnReq: { _id: new ObjectId(parcelId) } } },
     );
-    
-    if (typeof managerCache !== "undefined") {
-      managerCache.flushAll();
-    }
 
-    if (typeof parcelsCache !== "undefined") {
-      parcelsCache.flushAll();
-    }
-
-    if (typeof parcelsStatusWiseCache !== "undefined") {
-      parcelsStatusWiseCache.flushAll();
-    }
-
-    if (typeof trackingCache !== "undefined") {
-      trackingCache.flushAll();
-    }
-
-    if (typeof hubAgingCache !== "undefined") {
-      hubAgingCache.flushAll();
-    }
+    managerCache.bump("global");
+    invalidateParcelStatusChange({
+      trackingID: updatedParcel.trackingID,
+      senderEmail: updatedParcel.senderInfo?.email,
+      originHub: updatedParcel.serviceCenters?.origin,
+      destinationHub: updatedParcel.serviceCenters?.destination,
+      parcelId,
+    });
 
     res.send({
       success: true,
@@ -2024,35 +1764,27 @@ app.patch("/parcels/return-origin-hub/received/:parcelId", async (req, res) => {
       { returnDocument: "after" },
     );
 
-    if (typeof parcelsCache !== "undefined") {
-      parcelsCache.flushAll();
-    }
-
-    if (typeof parcelsStatusWiseCache !== "undefined") {
-      parcelsStatusWiseCache.flushAll();
-    }
-
-    if (typeof trackingCache !== "undefined") {
-      trackingCache.flushAll();
-    }
-
-    if (typeof hubAgingCache !== "undefined") {
-      hubAgingCache.flushAll();
-    }
-
-    if (typeof managerCache !== "undefined") {
-      managerCache.flushAll();
-    }
-
     if (!updatedParcel) {
-      return res.status(404).send({
-        success: false,
-        message: "Parcel not found in registry.",
-      });
+      return res
+        .status(404)
+        .send({ success: false, message: "Parcel not found in registry." });
+    }
+
+    managerCache.bump("global");
+    invalidateParcelStatusChange({
+      trackingID: updatedParcel.trackingID,
+      senderEmail: updatedParcel.senderInfo?.email,
+      originHub: updatedParcel.serviceCenters?.origin,
+      destinationHub: updatedParcel.serviceCenters?.destination,
+      parcelId,
+    });
+    if (updatedParcel.serviceCenters?.origin) {
+      returnWarehouseCache.del(
+        `return_warehouse_${updatedParcel.serviceCenters.origin.toLowerCase()}`,
+      ); // 💡 targeted
     }
 
     await logTracking(updatedParcel, "receive-from-origin-warehouse");
-
     res.send({
       success: true,
       message: "Parcel successfully received from origin warehouse!",
@@ -2065,12 +1797,10 @@ app.patch("/parcels/return-origin-hub/received/:parcelId", async (req, res) => {
 app.get("/warehouse/return-house/:hubName", async (req, res) => {
   try {
     const { hubName } = req.params;
-
     const cacheKey = `return_warehouse_${hubName.toLowerCase()}`;
     const cachedParcels = returnWarehouseCache.get(cacheKey);
-    if (cachedParcels) {
+    if (cachedParcels)
       return res.send({ success: true, returnList: cachedParcels });
-    }
 
     const { parcelsCollections } = await connectDB();
     const parcels = await parcelsCollections
@@ -2119,6 +1849,10 @@ app.patch(
         );
       }
 
+      const rider = await ridersCollections.findOne({
+        _id: new ObjectId(riderId),
+      });
+      const riderEmail = rider.email;
       await logTracking(parcel, "delivered");
 
       const result = await ridersCollections.updateOne(
@@ -2129,29 +1863,21 @@ app.patch(
         },
       );
 
-      if (typeof parcelsCache !== "undefined") {
-        parcelsCache.flushAll();
-      }
+      invalidateParcelStatusChange({
+        trackingID: parcel.trackingID,
+        senderEmail: merchantEmail,
+        originHub: parcel.serviceCenters?.origin,
+        destinationHub: parcel.serviceCenters?.destination,
+        parcelId,
+      });
+      ridersCache.bump(rider.area || "global");
+      if (rider.area)
+        availableRidersCache.del(
+          `available_riders_${rider.area.toLowerCase()}`,
+        );
 
-      if (typeof parcelsStatusWiseCache !== "undefined") {
-        parcelsStatusWiseCache.flushAll();
-      }
-
-      if (typeof trackingCache !== "undefined") {
-        trackingCache.flushAll();
-      }
-
-      if (typeof ridersCache !== "undefined") {
-        ridersCache.flushAll();
-      }
-
-      if (typeof availableRidersCache !== "undefined") {
-        availableRidersCache.flushAll();
-      }
-
-      if (typeof targetedMerchantCache !== "undefined") {
-        targetedMerchantCache.flushAll();
-      }
+      if (merchantEmail) targetedMerchantCache.del(`merchant_${merchantEmail}`);
+      riderCache.del(`rider_${riderEmail}`);
 
       res.send({ success: true, result });
     } catch (error) {
@@ -2167,7 +1893,6 @@ app.delete("/riders/:id", async (req, res) => {
     const { ridersCollections, usersCollection } = await connectDB();
     const id = req.params.id;
     const query = { _id: new ObjectId(id) };
-
     const riderData = await ridersCollections.findOne(query);
 
     if (!riderData) {
@@ -2177,19 +1902,20 @@ app.delete("/riders/:id", async (req, res) => {
     }
 
     const deleteResult = await ridersCollections.deleteOne(query);
-
     if (deleteResult.deletedCount > 0) {
-      const userFilter = { email: riderData.email };
-      const userUpdate = {
-        $set: {
-          role: "user",
-        },
-      };
-
       const userUpdateResult = await usersCollection.updateOne(
-        userFilter,
-        userUpdate,
+        { email: riderData.email },
+        { $set: { role: "user" } },
       );
+
+      userCache.del(`user_${riderData.email}`);
+      userRoleCache.del(`user_role_${riderData.email}`);
+      riderCache.del(`rider_${riderData.email}`);
+      ridersCache.bump(riderData.area || "global");
+      if (riderData.area)
+        availableRidersCache.del(
+          `available_riders_${riderData.area.toLowerCase()}`,
+        );
 
       res.send({
         success: true,
@@ -2205,7 +1931,6 @@ app.delete("/riders/:id", async (req, res) => {
 });
 
 /* ---- Merchant APIs Start ---- */
-
 app.get(
   "/all-merchants",
   verifyFireBaseToken,
@@ -2214,14 +1939,11 @@ app.get(
     try {
       const cacheKey = "allMerchants";
       const cacheData = allMerchantsCache.get(cacheKey);
-      if (cacheData) {
-        return res.send({ success: true, cacheData });
-      }
+      if (cacheData) return res.send({ success: true, cacheData });
+
       const { merchantsCollections } = await connectDB();
       const result = await merchantsCollections.find({}).toArray();
-
       allMerchantsCache.set(cacheKey, result);
-
       res.send(result);
     } catch (error) {
       res.status(500).send({ success: false, error: "Internal Server Error" });
@@ -2238,19 +1960,13 @@ app.get(
       const { hubName } = req.params;
       const cacheKey = `area_merchant_${hubName}`;
       const cachedMerchants = merchantsAreaWiseCache.get(cacheKey);
-      if (cachedMerchants) {
-        return res.send(cachedMerchants);
-      }
+      if (cachedMerchants) return res.send(cachedMerchants);
 
       const { merchantsCollections } = await connectDB();
       const result = await merchantsCollections
-        .find({
-          area: hubName,
-        })
+        .find({ area: hubName })
         .toArray();
-
       merchantsAreaWiseCache.set(cacheKey, result);
-
       res.send(result);
     } catch (error) {
       res.status(500).send({ success: false, error: "Internal Server Error" });
@@ -2265,19 +1981,22 @@ app.post("/merchants", async (req, res) => {
     const isExist = await merchantsCollections.findOne({
       email: newMerchant.email,
     });
-    if (isExist) {
+    if (isExist)
       return res.send({ message: "This email already used for Merchant!" });
-    }
 
     const result = await merchantsCollections.insertOne(newMerchant);
-    const userRes = await userCollections.updateOne(
+    await userCollections.updateOne(
       { email: newMerchant.email },
-      {
-        $set: {
-          role: "merchant",
-        },
-      },
+      { $set: { role: "merchant" } },
     );
+
+    userCache.del(`user_${newMerchant.email}`);
+    userRoleCache.del(`user_role_${newMerchant.email}`);
+    usersCache.bump("global");
+    allMerchantsCache.del("allMerchants");
+    if (newMerchant.area)
+      merchantsAreaWiseCache.del(`area_merchant_${newMerchant.area}`);
+
     res.send(result);
   } catch (error) {
     res.status(500).send({ error: error.message });
@@ -2294,18 +2013,14 @@ app.get(
       const email = req.params.email;
       const cacheKey = `merchant_${email}`;
       const cachedData = targetedMerchantCache.get(cacheKey);
-      if (cachedData) {
-        return res.send(cachedData);
-      }
+      if (cachedData) return res.send(cachedData);
 
       const { merchantsCollections } = await connectDB();
       const merchant = await merchantsCollections.findOne({ email: email });
-
       if (!merchant) {
-        return res.status(404).send({
-          success: false,
-          message: "User not found in database",
-        });
+        return res
+          .status(404)
+          .send({ success: false, message: "User not found in database" });
       }
 
       const responseData = {
@@ -2314,12 +2029,8 @@ app.get(
         email: merchant.email,
         ...merchant,
       };
-
       targetedMerchantCache.set(cacheKey, responseData);
-
-      res.send({
-        responseData,
-      });
+      res.send(responseData);
     } catch (error) {
       res.status(500).send({ success: false, error: "Internal Server Error" });
     }
@@ -2334,26 +2045,23 @@ app.patch(
   async (req, res) => {
     try {
       const { merchantsCollections } = await connectDB();
+      const email = req.params.email;
       const updatedMerchantInfo = req.body;
-
       const result = await merchantsCollections.updateOne(
-        { email: req.params.email },
+        { email },
         { $set: updatedMerchantInfo },
       );
+
       if (result.modifiedCount > 0) {
+        targetedMerchantCache.del(`merchant_${email}`);
+        userCache.del(`user_${email}`);
+        allMerchantsCache.del("allMerchants");
+        if (updatedMerchantInfo.area)
+          merchantsAreaWiseCache.del(
+            `area_merchant_${updatedMerchantInfo.area}`,
+          );
 
-        if (typeof targetedMerchantCache !== "undefined") {
-          merchantsCache.flushAll();
-        }
-
-        if (typeof userCache !== "undefined") {
-          userCache.flushAll();
-        }
-
-        res.send({
-          success: true,
-          message: "Merchant profile edited done",
-        });
+        res.send({ success: true, message: "Merchant profile edited done" });
       } else {
         res.status(404).send({ success: false, message: "Merchant not found" });
       }
@@ -2369,9 +2077,7 @@ app.get("/payment-payout-summary/:email", async (req, res) => {
     const email = req.params.email;
     const cacheKey = `payout_summary_${email.toLowerCase()}`;
     const cachedData = payoutSummaryCache.get(cacheKey);
-    if (cachedData) {
-      return res.send(cachedData);
-    }
+    if (cachedData) return res.send(cachedData);
 
     const { parcelsCollections, payoutsCollections } = await connectDB();
     const deliveredParcels = await parcelsCollections
@@ -2382,7 +2088,6 @@ app.get("/payment-payout-summary/:email", async (req, res) => {
       })
       .toArray();
 
-    // Available Balance
     let availableBalance = 0;
     deliveredParcels.forEach((parcel) => {
       const cod = parcel.codAmount;
@@ -2392,7 +2097,6 @@ app.get("/payment-payout-summary/:email", async (req, res) => {
         : (availableBalance += cod - deliveryCharge);
     });
 
-    // Total Payout (Withdraw)
     const completedPayouts = await payoutsCollections
       .find({ email: email, payoutStatus: "completed" })
       .toArray();
@@ -2401,26 +2105,19 @@ app.get("/payment-payout-summary/:email", async (req, res) => {
       0,
     );
 
-    // Pending Payout / Withdraw
     const pendingPayouts = await payoutsCollections
-      .find({
-        email: email,
-        payoutStatus: "pending",
-      })
+      .find({ email: email, payoutStatus: "pending" })
       .toArray();
     const totalPending = pendingPayouts.reduce(
       (sum, p) => sum + (Number(p.amount) || 0),
       0,
     );
 
-    // recent Transaction
     const recentTransactions = await payoutsCollections
       .find({ email: email })
       .limit(5)
       .sort({ requestedAt: -1 })
       .toArray();
-
-    // Pending Transactions
     const pendingTransactions = await payoutsCollections
       .find({ email: email, payoutStatus: "pending" })
       .sort({ requestedAt: -1 })
@@ -2437,9 +2134,7 @@ app.get("/payment-payout-summary/:email", async (req, res) => {
       pendingTransactions,
       completedPayouts,
     };
-
     payoutSummaryCache.set(cacheKey, responseData);
-
     res.send(responseData);
   } catch (error) {
     res.status(500).send({ success: false, error: "Internal Server Error" });
@@ -2448,7 +2143,8 @@ app.get("/payment-payout-summary/:email", async (req, res) => {
 
 app.post("/request-payout", async (req, res) => {
   try {
-    const { parcelsCollections, paymentCollections, payoutsCollections } = await connectDB();
+    const { parcelsCollections, paymentCollections, payoutsCollections } =
+      await connectDB();
     const { email, withdrawAmount, paymentMethod } = req.body;
     if (!email || !withdrawAmount || withdrawAmount <= 0) {
       return res
@@ -2464,7 +2160,6 @@ app.post("/request-payout", async (req, res) => {
       })
       .toArray();
 
-    // Total Rev
     let totalRevenue = 0;
     deliveredParcels.forEach((parcel) => {
       const cod = parcel.codAmount;
@@ -2475,11 +2170,13 @@ app.post("/request-payout", async (req, res) => {
     });
 
     if (withdrawAmount > totalRevenue) {
-      return res.status(400).send({
-        success: false,
-        message:
-          "Insufficient balance! You cannot withdraw more than your available balance.",
-      });
+      return res
+        .status(400)
+        .send({
+          success: false,
+          message:
+            "Insufficient balance! You cannot withdraw more than your available balance.",
+        });
     }
 
     const baseParcelsInfo = deliveredParcels.map((parcel) => ({
@@ -2500,37 +2197,20 @@ app.post("/request-payout", async (req, res) => {
       parcelsBreakdown: baseParcelsInfo,
     };
     const result = await payoutsCollections.insertOne(newPayoutRequest);
+
     if (result.insertedId) {
       const parcelIds = baseParcelsInfo.map((p) => p.parcelId);
-
       await parcelsCollections.updateMany(
         { _id: { $in: parcelIds } },
         { $set: { merchantRevenueStatus: "pending" } },
       );
 
-      if (typeof payoutSummaryCache !== "undefined") {
-        payoutSummaryCache.flushAll();
-      }
-
-      if (typeof allPayoutsCache !== "undefined") {
-        allPayoutsCache.flushAll();
-      }
-
-      if (typeof merchantUnpaidCache !== "undefined") {
-        merchantUnpaidCache.flushAll();
-      }
-
-      if (typeof parcelsCache !== "undefined") {
-        parcelsCache.flushAll();
-      }
-
-      if (typeof parcelsStatusWiseCache !== "undefined") {
-        parcelsStatusWiseCache.flushAll();
-      }
-
-      if (typeof revenueStatsCache !== "undefined") {
-        revenueStatsCache.flushAll();
-      }
+      payoutSummaryCache.del(`payout_summary_${email.toLowerCase()}`);
+      allPayoutsCache.del("all_pending_payouts");
+      merchantUnpaidCache.del(`unpaid_parcels_${email}`);
+      merchantParcelsCache.bump(email);
+      parcelsStatusWiseCache.bump(email);
+      revenueStatsCache.bump(email);
 
       res.send({
         success: true,
@@ -2557,7 +2237,6 @@ app.patch("/approve-payout/:id", async (req, res) => {
     const payoutRequest = await payoutsCollections.findOne({
       _id: new ObjectId(payoutId),
     });
-
     if (!payoutRequest) {
       return res
         .status(404)
@@ -2566,55 +2245,40 @@ app.patch("/approve-payout/:id", async (req, res) => {
 
     if (status === "Completed") {
       if (!trxID) {
-        return res.status(400).send({
-          success: false,
-          message: "Transaction ID (TrxID) is required for completed payouts.",
-        });
+        return res
+          .status(400)
+          .send({
+            success: false,
+            message:
+              "Transaction ID (TrxID) is required for completed payouts.",
+          });
       }
-
       await payoutsCollections.updateOne(
         { _id: new ObjectId(payoutId) },
         {
           $set: {
             payoutStatus: "completed",
-            trxID: trxID,
+            trxID,
             approvedAt: new Date().toISOString(),
           },
         },
       );
-
       const parcelIds = payoutRequest.parcelsBreakdown.map(
         (p) => new ObjectId(p.parcelId),
       );
-
       await parcelsCollections.updateMany(
         { _id: { $in: parcelIds } },
         { $set: { merchantRevenueStatus: true, deliveryChargeStatus: "paid" } },
       );
 
-      if (typeof allPayoutsCache !== "undefined") {
-        allPayoutsCache.flushAll();
-      }
-
-      if (typeof payoutSummaryCache !== "undefined") {
-        payoutSummaryCache.flushAll();
-      }
-
-      if (typeof parcelsCache !== "undefined") {
-        parcelsCache.flushAll();
-      }
-
-      if (typeof parcelsStatusWiseCache !== "undefined") {
-        parcelsStatusWiseCache.flushAll();
-      }
-
-      if (typeof allMerchantsCache !== "undefined") {
-        allMerchantsCache.flushAll();
-      }
-
-      if (typeof merchantUnpaidCache !== "undefined") {
-        merchantUnpaidCache.flushAll();
-      }
+      allPayoutsCache.del("all_pending_payouts");
+      payoutSummaryCache.del(
+        `payout_summary_${payoutRequest.email.toLowerCase()}`,
+      );
+      merchantParcelsCache.bump(payoutRequest.email);
+      parcelsStatusWiseCache.bump(payoutRequest.email);
+      allMerchantsCache.del("allMerchants");
+      merchantUnpaidCache.del(`unpaid_parcels_${payoutRequest.email}`);
 
       return res.send({
         success: true,
@@ -2632,39 +2296,22 @@ app.patch("/approve-payout/:id", async (req, res) => {
           },
         },
       );
-
       const parcelIds = payoutRequest.parcelsBreakdown.map(
         (p) => new ObjectId(p.parcelId),
       );
-
       await parcelsCollections.updateMany(
         { _id: { $in: parcelIds } },
         { $set: { merchantRevenueStatus: null } },
       );
 
-      if (typeof allPayoutsCache !== "undefined") {
-        allPayoutsCache.flushAll();
-      }
-
-      if (typeof payoutSummaryCache !== "undefined") {
-        payoutSummaryCache.flushAll();
-      }
-
-      if (typeof parcelsCache !== "undefined") {
-        parcelsCache.flushAll();
-      }
-
-      if (typeof parcelsStatusWiseCache !== "undefined") {
-        parcelsStatusWiseCache.flushAll();
-      }
-
-      if (typeof allMerchantsCache !== "undefined") {
-        allMerchantsCache.flushAll();
-      }
-
-      if (typeof merchantUnpaidCache !== "undefined") {
-        merchantUnpaidCache.flushAll();
-      }
+      allPayoutsCache.del("all_pending_payouts");
+      payoutSummaryCache.del(
+        `payout_summary_${payoutRequest.email.toLowerCase()}`,
+      );
+      merchantParcelsCache.bump(payoutRequest.email);
+      parcelsStatusWiseCache.bump(payoutRequest.email);
+      allMerchantsCache.del("allMerchants");
+      merchantUnpaidCache.del(`unpaid_parcels_${payoutRequest.email}`);
 
       return res.send({
         success: true,
@@ -2682,22 +2329,15 @@ app.get("/all-payouts", async (req, res) => {
   try {
     const cacheKey = "all_pending_payouts";
     const cachedData = allPayoutsCache.get(cacheKey);
-    if (cachedData) {
-      return res.send(cachedData);
-    }
+    if (cachedData) return res.send(cachedData);
 
     const { payoutsCollections } = await connectDB();
-    const query = { payoutStatus: "pending" };
-
     const result = await payoutsCollections
-      .find(query)
+      .find({ payoutStatus: "pending" })
       .sort({ requestedAt: -1 })
       .toArray();
-
     const responseData = { success: true, data: result };
-
     allPayoutsCache.set(cacheKey, responseData);
-
     res.send({ success: true, data: responseData });
   } catch (error) {
     res.status(500).send({ success: false, error: "Internal Server Error" });
@@ -2717,36 +2357,21 @@ app.get(
       const skip = parseInt(req.query.skip) || 0;
       const limit = parseInt(req.query.limit) || 10;
 
-      const cacheKey = `parcels_${email.toLowerCase()}_${filter || "all"}_${status || "all"}_${skip}_${limit}`;
-      const cachedData = parcelsCache.get(cacheKey);
-      if (cachedData) {
-        return res.send(cachedData);
-      }
+      const params = [filter || "all", status || "all", skip, limit];
+      const cachedData = merchantParcelsCache.get(email.toLowerCase(), params);
+      if (cachedData) return res.send(cachedData);
 
       let startDate = new Date();
-      if (filter === "this-week") {
-        startDate.setDate(startDate.getDate() - 7);
-      } else if (filter === "last-week") {
+      if (filter === "this-week") startDate.setDate(startDate.getDate() - 7);
+      else if (filter === "last-week")
         startDate.setDate(startDate.getDate() - 14);
-      } else if (filter === "last-month") {
+      else if (filter === "last-month")
         startDate.setMonth(startDate.getMonth() - 1);
-      } else {
-        startDate = null;
-      }
+      else startDate = null;
 
       const query = { "senderInfo.email": email };
-      if (startDate) {
-        query.createdAt = { $gte: startDate.toISOString() };
-      }
-      if (req.query.status) {
-        query.deliveryStatus = req.query.status;
-      }
-      // if (search) {
-      //   query.$or = [
-      //     { trackingID: { $regex: search, $options: "i" } },
-      //     { "receiverInfo.name": { $regex: search, $options: "i" } },
-      //   ];
-      // }
+      if (startDate) query.createdAt = { $gte: startDate.toISOString() };
+      if (req.query.status) query.deliveryStatus = req.query.status;
 
       const [result, count] = await Promise.all([
         parcelsCollections
@@ -2759,9 +2384,7 @@ app.get(
       ]);
 
       const responseData = { count, data: result };
-
-      parcelsCache.set(cacheKey, responseData);
-
+      merchantParcelsCache.set(email.toLowerCase(), params, responseData);
       res.send(responseData);
     } catch (error) {
       res.status(500).send({ message: "Internal Server Error" });
@@ -2773,19 +2396,13 @@ app.get("/parcel/:parcelID", async (req, res) => {
   try {
     const cacheKey = `parcel_${req.params.parcelID}`;
     const cachedParcel = parcelDetailCache.get(cacheKey);
-
-    if (cachedParcel) {
-      return res.send(cachedParcel);
-    }
+    if (cachedParcel) return res.send(cachedParcel);
 
     const { parcelsCollections } = await connectDB();
     const parcel = await parcelsCollections.findOne({
       _id: new ObjectId(req.params.parcelID),
     });
-
-    //
     parcelDetailCache.set(cacheKey, parcel);
-
     res.send(parcel);
   } catch (error) {
     res.status(500).send({ success: false, error: "Internal Server Error" });
@@ -2800,11 +2417,9 @@ app.get(
   async (req, res) => {
     try {
       const cacheKey = `late_invoices_${req.params.email}`;
-
       const cachedData = lateInvoicesCache.get(cacheKey);
-      if (cachedData) {
-        return res.send(cachedData);
-      }
+      if (cachedData) return res.send(cachedData);
+
       const { parcelsCollections } = await connectDB();
       const lateInvoices = await parcelsCollections
         .find({
@@ -2815,7 +2430,6 @@ app.get(
         .toArray();
 
       lateInvoicesCache.set(cacheKey, lateInvoices);
-
       res.send(lateInvoices);
     } catch (error) {
       res.status(500).send({ message: "Failed to fetch late invoices" });
@@ -2834,16 +2448,8 @@ app.get("/parcels/unpaid/:email", async (req, res) => {
     }
 
     const { parcelsCollections } = await connectDB();
-    const query = {
-      "senderInfo.email": email,
-      deliveryChargeStatus: "unpaid",
-    };
-
     const unpaidParcels = await parcelsCollections
-      .find({
-        "senderInfo.email": email,
-        deliveryChargeStatus: "unpaid",
-      })
+      .find({ "senderInfo.email": email, deliveryChargeStatus: "unpaid" })
       .sort({ createdAt: -1 })
       .toArray();
 
@@ -2851,14 +2457,12 @@ app.get("/parcels/unpaid/:email", async (req, res) => {
       (sum, parcel) => sum + (parcel.deliveryCharge || 0),
       0,
     );
-
     const responsePayload = {
       success: true,
       totalDue,
       count: unpaidParcels.length,
       data: unpaidParcels,
     };
-
     const jsonString = JSON.stringify(responsePayload);
     merchantUnpaidCache.set(cacheKey, jsonString);
 
@@ -2874,8 +2478,7 @@ app.get("/parcels/status/:email", async (req, res) => {
   try {
     const email = req.params.email;
     const status = req.query.status;
-    const cacheKey = `parcels_status_${email}_${status || "all"}`;
-    const cachedString = parcelsStatusWiseCache.get(cacheKey);
+    const cachedString = parcelsStatusWiseCache.get(email, [status || "all"]);
     if (cachedString) {
       res.setHeader("Content-Type", "application/json");
       return res.status(200).send(cachedString);
@@ -2883,15 +2486,11 @@ app.get("/parcels/status/:email", async (req, res) => {
 
     const { parcelsCollections } = await connectDB();
     let query = { "senderInfo.email": email };
-
-    if (status) {
-      query.deliveryStatus = status;
-    }
+    if (status) query.deliveryStatus = status;
 
     const result = await parcelsCollections.find(query).toArray();
-
     const jsonString = JSON.stringify(result);
-    parcelsStatusWiseCache.set(cacheKey, jsonString);
+    parcelsStatusWiseCache.set(email, [status || "all"], jsonString);
 
     res.setHeader("Content-Type", "application/json");
     res.status(200).send(jsonString);
@@ -2919,9 +2518,7 @@ app.get(
       const { parcelsCollections } = await connectDB();
       const stats = await parcelsCollections
         .aggregate([
-          {
-            $match: { "senderInfo.email": req.params.email },
-          },
+          { $match: { "senderInfo.email": req.params.email } },
           {
             $group: {
               _id: {
@@ -2941,7 +2538,6 @@ app.get(
         readyDeliver: 0,
         delivered: 0,
       };
-
       stats.forEach((element) => {
         if (element._id.deliveryChargeStatus === "unpaid")
           formattedData.toPay += element.count;
@@ -2975,29 +2571,24 @@ app.get(
     try {
       const email = req.params.email;
       const { filter } = req.query;
-
-      const cacheKey = `parcel_rev_stats_${email}_${filter}`;
-
-      const cachedString = revenueStatsCache.get(cacheKey);
+      const cachedString = revenueStatsCache.get(email, [filter || "default"]);
       if (cachedString) {
         res.setHeader("Content-Type", "application/json");
         return res.status(200).send(cachedString);
       }
 
-      if (!pendingRequests.has(cacheKey)) {
+      const dedupeKey = `${email}:${filter}`;
+      if (!pendingRequests.has(dedupeKey)) {
         const fetchPromise = (async () => {
           const { parcelsCollections } = await connectDB();
           let startDate = new Date();
-
-          if (filter === "this-week") {
+          if (filter === "this-week")
             startDate.setDate(startDate.getDate() - 7);
-          } else if (filter === "last-week") {
+          else if (filter === "last-week")
             startDate.setDate(startDate.getDate() - 14);
-          } else if (filter === "last-month") {
+          else if (filter === "last-month")
             startDate.setMonth(startDate.getMonth() - 1);
-          } else {
-            startDate.setDate(startDate.getDate() - 7);
-          }
+          else startDate.setDate(startDate.getDate() - 7);
 
           const stats = await parcelsCollections
             .aggregate([
@@ -3027,128 +2618,34 @@ app.get(
             name: element._id,
             value: element.totalRevenue,
           }));
-
           const jsonString = JSON.stringify(chartData);
-          revenueStatsCache.set(cacheKey, jsonString);
+          revenueStatsCache.set(email, [filter || "default"], jsonString);
           return jsonString;
         })();
-
-        pendingRequests.set(cacheKey, fetchPromise);
+        pendingRequests.set(dedupeKey, fetchPromise);
       }
 
-      const jsonString = await pendingRequests.get(cacheKey);
-
-      pendingRequests.delete(cacheKey);
+      const jsonString = await pendingRequests.get(dedupeKey);
+      pendingRequests.delete(dedupeKey);
 
       res.setHeader("Content-Type", "application/json");
       res.status(200).send(jsonString);
     } catch (error) {
       const email = req.params.email;
       const { filter } = req.query;
-      pendingRequests.delete(`parcel_rev_stats_${email}_${filter}`);
-
+      pendingRequests.delete(`${email}:${filter}`);
       res.status(500).send({ message: "Internal Server Error" });
     }
   },
 );
 
-// Another sample
-// app.get(
-//   "/revenue/stats/:email",
-//   verifyFireBaseToken,
-//   verifyMerchantToken,
-//   verifyOwner,
-//   async (req, res) => {
-//     try {
-//       const email = req.params.email;
-//       const { filter } = req.query;
-
-//       const cacheKey = `parcel_rev_stats_${email}_${filter}`;
-//       const cachedString = revenueStatsCache.get(cacheKey);
-//       if (cachedString) {
-//         res.setHeader("Content-Type", "application/json");
-//         return res.status(200).send(cachedString);
-//       }
-
-//       const { parcelsCollections } = await connectDB();
-//       let startDate = new Date();
-
-//       if (filter === "this-week") {
-//         startDate.setDate(startDate.getDate() - 7);
-//       } else if (filter === "last-week") {
-//         startDate.setDate(startDate.getDate() - 14);
-//       } else if (filter === "last-month") {
-//         startDate.setMonth(startDate.getMonth() - 1);
-//       } else {
-//         startDate.setDate(startDate.getDate() - 7);
-//       }
-
-//       const stats = await parcelsCollections
-//         .aggregate([
-//           {
-//             $match: {
-//               "senderInfo.email": req.params.email,
-//               deliveryStatus: "delivered",
-//               createdAt: { $gte: startDate.toISOString() },
-//             },
-//           },
-//           {
-//             $group: {
-//               _id: {
-//                 $dateToString: {
-//                   format: "%d %b",
-//                   date: { $toDate: "$createdAt" },
-//                 },
-//               },
-//               totalRevenue: { $sum: "$codAmount" },
-//             },
-//           },
-//           { $sort: { _id: 1 } },
-//         ])
-//         .toArray();
-
-//       const chartData = stats.map((element) => ({
-//         name: element._id,
-//         value: element.totalRevenue,
-//       }));
-
-//       const jsonString = JSON.stringify(chartData);
-//       revenueStatsCache.set(cacheKey, jsonString);
-
-//       res.setHeader("Content-Type", "application/json");
-//       res.status(200).send(jsonString);
-//     } catch (error) {
-//       res.status(500).send({ message: "Internal Server Error" });
-//     }
-//   },
-// );
-
-// app.get("/merchant-parcels/:email", async (req, res) => {
-//   try {
-//     const { parcelsCollections } = await connectDB();
-//     const email = req.params.email;
-
-//     const result = await parcelsCollections
-//       .find({ "senderInfo.email": email })
-//       .sort({ createdAt: -1 })
-//       .toArray();
-
-//     res.send(result);
-//   } catch (error) {
-//     res.status(500).send({ message: "Error loading reports" });
-//   }
-// });
-
 app.get("/tracking/:id", async (req, res) => {
   try {
     const cachedData = trackingCache.get(req.params.id);
-
     if (cachedData) {
-      return res.status(200).send({
-        success: true,
-        source: "cache",
-        result: cachedData,
-      });
+      return res
+        .status(200)
+        .send({ success: true, source: "cache", result: cachedData });
     }
 
     const { trackingLogsCollections } = await connectDB();
@@ -3156,32 +2653,12 @@ app.get("/tracking/:id", async (req, res) => {
       .find({ trackingID: req.params.id })
       .sort({ createdAt: -1 })
       .toArray();
-
     trackingCache.set(req.params.id, result);
-
-    res.status(200).send({
-      success: true,
-      result,
-    });
+    res.status(200).send({ success: true, result });
   } catch (error) {
     res.status(500).send({ message: "Error loading tracking logs" });
   }
 });
-// app.get("/tracking/:id", async (req, res) => {
-//   try {
-//     const { trackingLogsCollections } = await connectDB();
-//     const result = await trackingLogsCollections
-//       .find({ trackingID: req.params.id })
-//       .sort({ createdAt: -1 })
-//       .toArray();
-//     res.status(200).send({
-//       success: true,
-//       result,
-//     });
-//   } catch (error) {
-//     res.status(500).send({ message: "Error loading tracking logs" });
-//   }
-// });
 
 app.post(
   "/parcels",
@@ -3192,29 +2669,20 @@ app.post(
     try {
       const { parcelsCollections } = await connectDB();
       const newParcel = req.body;
-
       await logTracking(newParcel, "parcel-created");
-
       const result = await parcelsCollections.insertOne(newParcel);
 
-      if (typeof parcelsCache !== "undefined") {
-        parcelsCache.flushAll();
+      const senderEmail = newParcel.senderInfo?.email;
+      if (senderEmail) {
+        merchantParcelsCache.bump(senderEmail);
+        parcelsStatusWiseCache.bump(senderEmail);
+        merchantUnpaidCache.del(`unpaid_parcels_${senderEmail}`);
       }
-
-      if (typeof parcelsStatusWiseCache !== "undefined") {
-        parcelsStatusWiseCache.flushAll();
-      }
-
-      if (typeof merchantUnpaidCache !== "undefined") {
-        merchantUnpaidCache.flushAll();
-      }
-
-      if (typeof hubEfficiencyCache !== "undefined") {
-        hubEfficiencyCache.flushAll();
-      }
-
-      if (typeof hubAgingCache !== "undefined") {
-        hubAgingCache.flushAll();
+      const originHub = newParcel.serviceCenters?.origin;
+      if (originHub) {
+        hubEfficiencyCache.del(`hub_efficiency_flow_${originHub}`);
+        hubAgingCache.del(`hub_aging_status_${originHub}`);
+        incomingParcelsCache.del(`incoming_parcels_${originHub}`);
       }
 
       res.send(result);
@@ -3232,9 +2700,22 @@ app.delete(
   async (req, res) => {
     try {
       const { parcelsCollections } = await connectDB();
+      const parcel = await parcelsCollections.findOne({
+        _id: new ObjectId(req.params.id),
+      }); // 💡 fetched before delete so we still know its owner/hub for invalidation
       const result = await parcelsCollections.deleteOne({
         _id: new ObjectId(req.params.id),
       });
+
+      if (parcel) {
+        invalidateParcelStatusChange({
+          trackingID: parcel.trackingID,
+          senderEmail: parcel.senderInfo?.email,
+          originHub: parcel.serviceCenters?.origin,
+          destinationHub: parcel.serviceCenters?.destination,
+          parcelId: req.params.id,
+        });
+      }
       res.send(result);
     } catch (error) {
       res.status(500).send({ message: "Internal Server Error" });
@@ -3250,7 +2731,6 @@ app.patch(
     try {
       const { id } = req.params;
       const { parcelsCollections } = await connectDB();
-
       const result = await parcelsCollections.updateOne(
         { _id: new ObjectId(id) },
         {
@@ -3261,41 +2741,20 @@ app.patch(
           },
         },
       );
-
       const parcel = await parcelsCollections.findOne({
         _id: new ObjectId(id),
       });
       await logTracking(parcel, "in-transit");
 
       if (result.modifiedCount > 0) {
-        if (typeof parcelsCache !== "undefined") {
-          parcelsCache.flushAll();
-        }
-
-        if (typeof parcelsStatusWiseCache !== "undefined") {
-          parcelsStatusWiseCache.flushAll();
-        }
-
-        if (typeof parcelDetailCache !== "undefined") {
-          parcelDetailCache.flushAll();
-        }
-
-        if (typeof trackingCache !== "undefined") {
-          trackingCache.flushAll();
-        }
-
-        if (typeof sortingCache !== "undefined") {
-          sortingCache.flushAll();
-        }
-
-        if (typeof hubAgingCache !== "undefined") {
-          hubAgingCache.flushAll();
-        }
-
-        if (typeof managerCache !== "undefined") {
-          managerCache.flushAll();
-        }
-
+        invalidateParcelStatusChange({
+          trackingID: parcel.trackingID,
+          senderEmail: parcel.senderInfo?.email,
+          originHub: parcel.serviceCenters?.origin,
+          destinationHub: parcel.serviceCenters?.destination,
+          parcelId: id,
+        });
+        managerCache.bump("global");
         res.send({
           success: true,
           message: "Parcel status updated to in-transit",
@@ -3317,7 +2776,6 @@ app.patch(
     try {
       const { id } = req.params;
       const { parcelsCollections } = await connectDB();
-
       const result = await parcelsCollections.updateOne(
         { _id: new ObjectId(id) },
         {
@@ -3328,44 +2786,20 @@ app.patch(
           },
         },
       );
-
       const parcel = await parcelsCollections.findOne({
         _id: new ObjectId(id),
       });
       await logTracking(parcel, "reached-destination-warehouse");
+
       if (result.modifiedCount > 0) {
-        if (typeof parcelsCache !== "undefined") {
-          parcelsCache.flushAll();
-        }
-
-        if (typeof parcelsStatusWiseCache !== "undefined") {
-          parcelsStatusWiseCache.flushAll();
-        }
-
-        if (typeof parcelDetailCache !== "undefined") {
-          parcelDetailCache.flushAll();
-        }
-
-        if (typeof trackingCache !== "undefined") {
-          trackingCache.flushAll();
-        }
-
-        if (typeof sortingCache !== "undefined") {
-          sortingCache.flushAll();
-        }
-
-        if (typeof managerCache !== "undefined") {
-          managerCache.flushAll();
-        }
-
-        if (typeof hubAgingCache !== "undefined") {
-          hubAgingCache.flushAll();
-        }
-
-        if (typeof hubEfficiencyCache !== "undefined") {
-          hubEfficiencyCache.flushAll();
-        }
-
+        invalidateParcelStatusChange({
+          trackingID: parcel.trackingID,
+          senderEmail: parcel.senderInfo?.email,
+          originHub: parcel.serviceCenters?.origin,
+          destinationHub: parcel.serviceCenters?.destination,
+          parcelId: id,
+        });
+        managerCache.bump("global");
         res.send({
           success: true,
           message: "Parcel status updated to in-transit",
@@ -3387,7 +2821,6 @@ app.patch(
     try {
       const { id } = req.params;
       const { parcelsCollections } = await connectDB();
-
       const result = await parcelsCollections.updateOne(
         { _id: new ObjectId(id) },
         {
@@ -3398,44 +2831,20 @@ app.patch(
           },
         },
       );
-
       const parcel = await parcelsCollections.findOne({
         _id: new ObjectId(id),
       });
       await logTracking(parcel, "reached-origin-warehouse");
+
       if (result.modifiedCount > 0) {
-        if (typeof parcelsCache !== "undefined") {
-          parcelsCache.flushAll();
-        }
-
-        if (typeof parcelsStatusWiseCache !== "undefined") {
-          parcelsStatusWiseCache.flushAll();
-        }
-
-        if (typeof parcelDetailCache !== "undefined") {
-          parcelDetailCache.flushAll();
-        }
-
-        if (typeof trackingCache !== "undefined") {
-          trackingCache.flushAll();
-        }
-
-        if (typeof pickupCache !== "undefined") {
-          pickupCache.flushAll();
-        }
-
-        if (typeof sortingCache !== "undefined") {
-          sortingCache.flushAll();
-        }
-
-        if (typeof managerCache !== "undefined") {
-          managerCache.flushAll();
-        }
-
-        if (typeof hubAgingCache !== "undefined") {
-          hubAgingCache.flushAll();
-        }
-
+        invalidateParcelStatusChange({
+          trackingID: parcel.trackingID,
+          senderEmail: parcel.senderInfo?.email,
+          originHub: parcel.serviceCenters?.origin,
+          destinationHub: parcel.serviceCenters?.destination,
+          parcelId: id,
+        });
+        managerCache.bump("global");
         res.send({
           success: true,
           message: "Parcel status updated to in-transit",
@@ -3449,15 +2858,11 @@ app.patch(
   },
 );
 
-// verifyFireBaseToken,
-// verifyHubManagerToken,
-
 const pendingHubRequests = new Map();
 app.get("/hub-hand-cash/:hubName", async (req, res) => {
   try {
     const { hubName } = req.params;
     const cacheKey = `hub_hand_cash_${hubName}`;
-
     const cachedString = hubHandCashCache.get(cacheKey);
     if (cachedString) {
       res.setHeader("Content-Type", "application/json");
@@ -3467,7 +2872,6 @@ app.get("/hub-hand-cash/:hubName", async (req, res) => {
     if (!pendingHubRequests.has(cacheKey)) {
       const fetchPromise = (async () => {
         const { parcelsCollections } = await connectDB();
-
         const parcels = await parcelsCollections
           .find({
             "serviceCenters.destination": hubName,
@@ -3477,51 +2881,43 @@ app.get("/hub-hand-cash/:hubName", async (req, res) => {
           .toArray();
 
         let totalHandCash = 0;
-        const totalParcelCount = parcels.length;
-
         parcels.forEach((parcel) => {
           const isPayoutPending = [false, "pending"].includes(
             parcel.merchantRevenueStatus,
           );
-
-          if (isPayoutPending) {
-            totalHandCash += parcel.codAmount || 0;
-          } else if (!parcel.deliveryChargeOnlinePaymentStatus) {
+          if (isPayoutPending) totalHandCash += parcel.codAmount || 0;
+          else if (!parcel.deliveryChargeOnlinePaymentStatus)
             totalHandCash += parcel.deliveryCharge || 0;
-          }
         });
 
         const responseData = {
           success: true,
           parcels,
           hubName,
-          totalParcelCount,
+          totalParcelCount: parcels.length,
           totalHandCash,
         };
-
         const jsonString = JSON.stringify(responseData);
         hubHandCashCache.set(cacheKey, jsonString);
         return jsonString;
       })();
-
       pendingHubRequests.set(cacheKey, fetchPromise);
     }
 
     const jsonString = await pendingHubRequests.get(cacheKey);
-
     pendingHubRequests.delete(cacheKey);
-
     res.setHeader("Content-Type", "application/json");
     res.status(200).send(jsonString);
   } catch (error) {
     const { hubName } = req.params;
     pendingHubRequests.delete(`hub_hand_cash_${hubName}`);
-
-    res.status(500).send({
-      success: false,
-      message: "Internal Server Error",
-      error: error.message,
-    });
+    res
+      .status(500)
+      .send({
+        success: false,
+        message: "Internal Server Error",
+        error: error.message,
+      });
   }
 });
 
@@ -3534,7 +2930,6 @@ app.get(
     try {
       const { hubName } = req.params;
       const cacheKey = `hub_profit_metrics_${hubName}`;
-
       const cachedString = hubProfitCache.get(cacheKey);
       if (cachedString) {
         res.setHeader("Content-Type", "application/json");
@@ -3544,7 +2939,6 @@ app.get(
       if (!pendingHubProfitRequests.has(cacheKey)) {
         const fetchPromise = (async () => {
           const { parcelsCollections } = await connectDB();
-
           const parcels = await parcelsCollections
             .find({
               "serviceCenters.destination": hubName,
@@ -3553,9 +2947,8 @@ app.get(
             })
             .toArray();
 
-          let hqPayableProfit = 0;
-          let payableParcelCount = 0;
-
+          let hqPayableProfit = 0,
+            payableParcelCount = 0;
           parcels.forEach((parcel) => {
             if (!parcel.deliveryChargeOnlinePaymentStatus) {
               hqPayableProfit += parcel.deliveryCharge || 0;
@@ -3569,25 +2962,20 @@ app.get(
             totalParcelCount: payableParcelCount,
             hqPayableProfit,
           };
-
           const jsonString = JSON.stringify(responseData);
           hubProfitCache.set(cacheKey, jsonString);
           return jsonString;
         })();
-
         pendingHubProfitRequests.set(cacheKey, fetchPromise);
       }
 
       const jsonString = await pendingHubProfitRequests.get(cacheKey);
-
       pendingHubProfitRequests.delete(cacheKey);
-
       res.setHeader("Content-Type", "application/json");
       res.status(200).send(jsonString);
     } catch (error) {
       const { hubName } = req.params;
       pendingHubProfitRequests.delete(`hub_profit_metrics_${hubName}`);
-
       console.error("Hub Profit Metrics Error:", error);
       res
         .status(500)
@@ -3605,7 +2993,6 @@ app.get(
     try {
       const { hubName } = req.params;
       const cacheKey = `hub_aging_status_${hubName}`;
-
       const cachedString = hubAgingCache.get(cacheKey);
       if (cachedString) {
         res.setHeader("Content-Type", "application/json");
@@ -3615,7 +3002,6 @@ app.get(
       if (!pendingHubAgingRequests.has(cacheKey)) {
         const fetchPromise = (async () => {
           const { parcelsCollections } = await connectDB();
-
           const activeParcels = await parcelsCollections
             .find({
               $or: [
@@ -3631,47 +3017,34 @@ app.get(
             })
             .toArray();
 
-          let age24H = 0;
-          let age48H = 0;
-          let age72HPlus = 0;
-
+          let age24H = 0,
+            age48H = 0,
+            age72HPlus = 0;
           const now = new Date();
-
           activeParcels.forEach((parcel) => {
             if (parcel.createdAt) {
-              const createdTime = new Date(parcel.createdAt);
-              const diffInHours = (now - createdTime) / (1000 * 60 * 60);
-
-              if (diffInHours <= 24) {
-                age24H++;
-              } else if (diffInHours > 24 && diffInHours <= 48) {
-                age48H++;
-              } else {
-                age72HPlus++;
-              }
+              const diffInHours =
+                (now - new Date(parcel.createdAt)) / (1000 * 60 * 60);
+              if (diffInHours <= 24) age24H++;
+              else if (diffInHours <= 48) age48H++;
+              else age72HPlus++;
             }
           });
 
-          const responseData = { age24H, age48H, age72HPlus };
-
-          const jsonString = JSON.stringify(responseData);
+          const jsonString = JSON.stringify({ age24H, age48H, age72HPlus });
           hubAgingCache.set(cacheKey, jsonString);
           return jsonString;
         })();
-
         pendingHubAgingRequests.set(cacheKey, fetchPromise);
       }
 
       const jsonString = await pendingHubAgingRequests.get(cacheKey);
-
       pendingHubAgingRequests.delete(cacheKey);
-
       res.setHeader("Content-Type", "application/json");
       res.status(200).send(jsonString);
     } catch (error) {
       const { hubName } = req.params;
       pendingHubAgingRequests.delete(`hub_aging_status_${hubName}`);
-
       res
         .status(500)
         .send({ success: false, message: "Internal Server Error" });
@@ -3688,7 +3061,6 @@ app.get(
     try {
       const { hubName } = req.params;
       const cacheKey = `hub_efficiency_flow_${hubName}`;
-
       const cachedString = hubEfficiencyCache.get(cacheKey);
       if (cachedString) {
         res.setHeader("Content-Type", "application/json");
@@ -3698,12 +3070,10 @@ app.get(
       if (!pendingHubEfficiencyRequests.has(cacheKey)) {
         const fetchPromise = (async () => {
           const { parcelsCollections } = await connectDB();
-
           const now = new Date();
-          const sevenDaysAgo = new Date(
+          const sevenDayAgoStr = new Date(
             now.getTime() - 7 * 24 * 60 * 60 * 1000,
-          );
-          const sevenDayAgoStr = sevenDaysAgo.toISOString();
+          ).toISOString();
 
           const sortingCount = await parcelsCollections.countDocuments({
             createdAt: { $gte: sevenDayAgoStr },
@@ -3718,13 +3088,11 @@ app.get(
               },
             ],
           });
-
           const OutForDeliveryCount = await parcelsCollections.countDocuments({
             "serviceCenters.destination": hubName,
             createdAt: { $gte: sevenDayAgoStr },
             deliveryStatus: "assign-delivery-rider",
           });
-
           const deliveredCount = await parcelsCollections.countDocuments({
             "serviceCenters.destination": hubName,
             createdAt: { $gte: sevenDayAgoStr },
@@ -3732,37 +3100,26 @@ app.get(
           });
 
           const total = sortingCount + OutForDeliveryCount + deliveredCount;
-
-          const sorting = Math.round((sortingCount / total) * 100) || 0;
-          const outDelivery =
-            Math.round((OutForDeliveryCount / total) * 100) || 0;
-          const delivered = Math.round((deliveredCount / total) * 100) || 0;
-
           const responseData = {
-            sorting,
-            outDelivery,
-            delivered,
+            sorting: Math.round((sortingCount / total) * 100) || 0,
+            outDelivery: Math.round((OutForDeliveryCount / total) * 100) || 0,
+            delivered: Math.round((deliveredCount / total) * 100) || 0,
             totalActive: total,
           };
-
           const jsonString = JSON.stringify(responseData);
           hubEfficiencyCache.set(cacheKey, jsonString);
           return jsonString;
         })();
-
         pendingHubEfficiencyRequests.set(cacheKey, fetchPromise);
       }
 
       const jsonString = await pendingHubEfficiencyRequests.get(cacheKey);
-
       pendingHubEfficiencyRequests.delete(cacheKey);
-
       res.setHeader("Content-Type", "application/json");
       res.status(200).send(jsonString);
     } catch (error) {
       const { hubName } = req.params;
       pendingHubEfficiencyRequests.delete(`hub_efficiency_flow_${hubName}`);
-
       res
         .status(500)
         .send({ success: false, message: "Internal Server Error" });
@@ -3774,7 +3131,6 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
   try {
     const { hubName } = req.params;
     const { hqPaymentsCollections, parcelsCollections } = await connectDB();
-
     const {
       depositedAmount,
       parcelIds,
@@ -3784,10 +3140,12 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
     } = req.body;
 
     if (!depositedAmount || !parcelIds || parcelIds.length === 0) {
-      return res.status(400).send({
-        success: false,
-        message: "Missing required fields: depositedAmount or parcelIds",
-      });
+      return res
+        .status(400)
+        .send({
+          success: false,
+          message: "Missing required fields: depositedAmount or parcelIds",
+        });
     }
 
     const depositInvoice = {
@@ -3802,12 +3160,10 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-
     const insertResult = await hqPaymentsCollections.insertOne(depositInvoice);
 
     if (insertResult.insertedId) {
       const objectIdArray = parcelIds.map((id) => new ObjectId(id));
-
       await parcelsCollections.updateMany(
         { _id: { $in: objectIdArray } },
         {
@@ -3818,43 +3174,27 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
         },
       );
 
-      if (typeof hubDepositHistoryCache !== "undefined") {
-        hubDepositHistoryCache.flushAll();
-      }
-
-      if (typeof hubHandCashCache !== "undefined") {
-        hubHandCashCache.flushAll();
-      }
-
-      if (typeof managerCache !== "undefined") {
-        managerCache.flushAll();
-      }
-
-      if (typeof parcelsCache !== "undefined") {
-        parcelsCache.flushAll();
-      }
-
-      if (typeof parcelsStatusWiseCache !== "undefined") {
-        parcelsStatusWiseCache.flushAll();
-      }
-
-      if (typeof revenueStatsCache !== "undefined") {
-        revenueStatsCache.flushAll();
-      }
+      depositHistoryCache.bump(hubName);
+      hubHandCashCache.del(`hub_hand_cash_${hubName}`);
+      managerCache.bump("global");
     }
 
-    res.status(201).send({
-      success: true,
-      message: "Deposit request submitted to HQ successfully!",
-      depositId: insertResult.insertedId,
-    });
+    res
+      .status(201)
+      .send({
+        success: true,
+        message: "Deposit request submitted to HQ successfully!",
+        depositId: insertResult.insertedId,
+      });
   } catch (error) {
     console.error("Deposit HQ Error:", error);
-    res.status(500).send({
-      success: false,
-      message: "Internal Server Error",
-      error: error.message,
-    });
+    res
+      .status(500)
+      .send({
+        success: false,
+        message: "Internal Server Error",
+        error: error.message,
+      });
   }
 });
 
@@ -3866,59 +3206,47 @@ app.get(
   async (req, res) => {
     try {
       const { hubName, status } = req.query;
-
-      const cacheKey = `hub_deposit_history_${hubName || "all"}_${status || "all"}`;
-
-      const cachedString = depositHistoryCache.get(cacheKey);
+      const owner = hubName || "global";
+      const cachedString = depositHistoryCache.get(owner, [status || "all"]);
       if (cachedString) {
         res.setHeader("Content-Type", "application/json");
         return res.status(200).send(cachedString);
       }
 
-      if (!pendingDepositHistoryRequests.has(cacheKey)) {
+      const cacheDedupeKey = `${owner}:${status || "all"}`;
+      if (!pendingDepositHistoryRequests.has(cacheDedupeKey)) {
         const fetchPromise = (async () => {
           const { hqPaymentsCollections } = await connectDB();
-
           const query = {};
-
-          if (hubName) {
-            query.hubName = hubName;
-          }
-
-          if (status) {
-            query.status = status;
-          }
+          if (hubName) query.hubName = hubName;
+          if (status) query.status = status;
 
           const depositHistory = await hqPaymentsCollections
             .find(query)
             .sort({ createdAt: -1 })
             .toArray();
-
           const responseData = {
             success: true,
             hubName,
             totalDeposits: depositHistory.length,
             history: depositHistory,
           };
-
           const jsonString = JSON.stringify(responseData);
-          depositHistoryCache.set(cacheKey, jsonString);
+          depositHistoryCache.set(owner, [status || "all"], jsonString);
           return jsonString;
         })();
-
-        pendingDepositHistoryRequests.set(cacheKey, fetchPromise);
+        pendingDepositHistoryRequests.set(cacheDedupeKey, fetchPromise);
       }
 
-      const jsonString = await pendingDepositHistoryRequests.get(cacheKey);
-
-      pendingDepositHistoryRequests.delete(cacheKey);
-
+      const jsonString =
+        await pendingDepositHistoryRequests.get(cacheDedupeKey);
+      pendingDepositHistoryRequests.delete(cacheDedupeKey);
       res.setHeader("Content-Type", "application/json");
       res.status(200).send(jsonString);
     } catch (error) {
       const { hubName, status } = req.query;
       pendingDepositHistoryRequests.delete(
-        `hub_deposit_history_${hubName || "all"}_${status || "all"}`,
+        `${hubName || "global"}:${status || "all"}`,
       );
       res
         .status(500)
@@ -3935,53 +3263,26 @@ app.patch(
     try {
       const { id } = req.params;
       const { hqPaymentsCollections, parcelsCollections } = await connectDB();
-
       const invoice = await hqPaymentsCollections.findOne({
         _id: new ObjectId(id),
       });
-      const objectParcelIds = invoice.parcelIds.map((id) => new ObjectId(id));
+      const objectParcelIds = invoice.parcelIds.map((pid) => new ObjectId(pid));
 
       await hqPaymentsCollections.updateOne(
         { _id: new ObjectId(id) },
         { $set: { status: "approved", approvedAt: new Date().toISOString() } },
       );
-
       await parcelsCollections.updateMany(
         { _id: { $in: objectParcelIds } },
         { $set: { isDepositedToHQ: true, depositRequestStatus: "approved" } },
       );
 
-      if (typeof depositHistoryCache !== "undefined") {
-        depositHistoryCache.flushAll();
-      }
-
-      if (typeof lateInvoicesCache !== "undefined") {
-        lateInvoicesCache.flushAll();
-      }
-
-      if (typeof hubHandCashCache !== "undefined") {
-        hubHandCashCache.flushAll();
-      }
-
-      if (typeof hubProfitCache !== "undefined") {
-        hubProfitCache.flushAll();
-      }
-
-      if (typeof revenueStatsCache !== "undefined") {
-        revenueStatsCache.flushAll();
-      }
-
-      if (typeof parcelsCache !== "undefined") {
-        parcelsCache.flushAll();
-      }
-
-      if (typeof parcelsStatusWiseCache !== "undefined") {
-        parcelsStatusWiseCache.flushAll();
-      }
-
-      if (typeof mainDashboardCache !== "undefined") {
-        mainDashboardCache.flushAll();
-      }
+      depositHistoryCache.bump(invoice.hubName);
+      depositHistoryCache.bump("global");
+      hubHandCashCache.del(`hub_hand_cash_${invoice.hubName}`);
+      hubProfitCache.del(`hub_profit_metrics_${invoice.hubName}`);
+      lateInvoicesCache.flushAll();
+      mainDashboardCache.del("master_admin_main_dashboard");
 
       res.send({ success: true, message: "Deposit approved successfully!" });
     } catch (error) {
@@ -3994,76 +3295,48 @@ app.patch(
 
 /* ---- Master Admin ---- */
 const pendingDashboardRequests = new Map();
-// verifyFireBaseToken,
-// verifyAdminToken,
-app.get(
-  "/master-admin/main-dashboard",
-  async (req, res) => {
-    try {
-      const cacheKey = "master_admin_main_dashboard";
-
-    // 🟢 ১. Fast Cache Hit (Pre-serialized JSON)
+app.get("/master-admin/main-dashboard", async (req, res) => {
+  try {
+    const cacheKey = "master_admin_main_dashboard";
     const cachedString = mainDashboardCache.get(cacheKey);
     if (cachedString) {
       res.setHeader("Content-Type", "application/json");
       return res.status(200).send(cachedString);
     }
 
-    // 🟢 ২. Single-Flight Block (Cache Stampede & High DB Load Prevention)
     if (!pendingDashboardRequests.has(cacheKey)) {
       const fetchPromise = (async () => {
         const { parcelsCollections, merchantsCollections, ridersCollections } =
           await connectDB();
 
-        // 🎯 আপনার অরিজিনাল 1. Revenue Aggregation
         const revenueResult = await parcelsCollections
           .aggregate([
-            {
-              $match: {
-                deliveryStatus: "delivered",
-              },
-            },
-            {
-              $group: {
-                _id: null,
-                total: { $sum: "$deliveryCharge" },
-              },
-            },
+            { $match: { deliveryStatus: "delivered" } },
+            { $group: { _id: null, total: { $sum: "$deliveryCharge" } } },
           ])
           .toArray();
-
         const totalRevenue =
           revenueResult.length > 0 ? revenueResult[0].total : 0;
 
-        // 🎯 আপনার অরিজিনাল Estimated Document Counts
         const totalParcels = await parcelsCollections.estimatedDocumentCount();
         const totalMerchants =
           await merchantsCollections.estimatedDocumentCount();
-
-        // 🎯 আপনার অরিজিনাল Rider Count
         const activeRiders = await ridersCollections.countDocuments({
           currentTasks: { $gt: 0 },
         });
-
-        // 🎯 আপনার অরিজিনাল Pipeline Counts
         const pendingPickUpAndDeliveryCount =
           await parcelsCollections.countDocuments({
             deliveryStatus: {
               $in: ["assign-pickup-rider", "assign-delivery-rider"],
             },
           });
-
-          const inTransitAndPickedCount = await parcelsCollections.countDocuments({
-            deliveryStatus: {
-              $in: ["rider-carrying", "in-transit"],
-            },
-          });
-
+        const inTransitAndPickedCount = await parcelsCollections.countDocuments(
+          { deliveryStatus: { $in: ["rider-carrying", "in-transit"] } },
+        );
         const dispatchCount = await parcelsCollections.countDocuments({
           deliveryStatus: "delivered",
         });
 
-        // 🎯 আপনার অরিজিনাল 2. Transit Liquidity Aggregation
         const transitLiquidityResult = await parcelsCollections
           .aggregate([
             {
@@ -4073,21 +3346,14 @@ app.get(
                 isDepositedToHQ: false,
               },
             },
-            {
-              $group: {
-                _id: null,
-                totalTransitCash: { $sum: "$codAmount" },
-              },
-            },
+            { $group: { _id: null, totalTransitCash: { $sum: "$codAmount" } } },
           ])
           .toArray();
-
         const codInTransit =
           transitLiquidityResult.length > 0
             ? transitLiquidityResult[0].totalTransitCash
             : 0;
 
-        // 🎯 আপনার অরিজিনাল Recent Parcels Query
         const recentParcels = await parcelsCollections
           .find({})
           .sort({ createdAt: -1 })
@@ -4101,7 +3367,6 @@ app.get(
           })
           .toArray();
 
-        // 🎯 আপনার অরিজিনাল Response Object
         const responseData = {
           success: true,
           metrics: {
@@ -4118,39 +3383,25 @@ app.get(
           },
           recentParcels,
         };
-
         const jsonString = JSON.stringify(responseData);
         mainDashboardCache.set(cacheKey, jsonString);
         return jsonString;
       })();
-
-      // প্রমিজটি ম্যাপে সেভ করে লক করা হলো
       pendingDashboardRequests.set(cacheKey, fetchPromise);
     }
 
-    // 🟢 ৩. ১ম রিকোয়েস্টের প্রমিজ থেকে শেয়ার্ড রেজাল্ট গ্রহণ
     const jsonString = await pendingDashboardRequests.get(cacheKey);
-
-    // মেমোরি ক্লিয়ার / লক রিলিজ
     pendingDashboardRequests.delete(cacheKey);
-
     res.setHeader("Content-Type", "application/json");
     res.status(200).send(jsonString);
   } catch (error) {
     pendingDashboardRequests.delete("master_admin_main_dashboard");
-
-      console.error("Main Dashboard Error:", error);
-      res
-        .status(500)
-        .send({ success: false, message: "Internal Server Error" });
-    }
+    console.error("Main Dashboard Error:", error);
+    res.status(500).send({ success: false, message: "Internal Server Error" });
   }
-);
-
-// Health check
-app.get("/", (req, res) => {
-  res.send("🚀 TradeCen Server Running");
 });
+
+app.get("/", (req, res) => res.send("🚀 TradeCen Server Running"));
 
 /* ----- Payment Method -----*/
 app.post("/payment-checkout", async (req, res) => {
@@ -4179,7 +3430,6 @@ app.post("/payment-checkout", async (req, res) => {
     success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
   });
-
   res.send({ url: session.url });
 });
 
@@ -4189,17 +3439,18 @@ app.patch("/verify-payment", async (req, res) => {
   const transactionId = session.payment_intent;
 
   const paymentExisted = await paymentCollections.findOne({ transactionId });
-  if (paymentExisted)
+  if (paymentExisted) {
     return res.send({
       message: "Already exist",
       ...paymentExisted,
       transactionId,
       trackingID: paymentExisted.trackingID,
     });
+  }
 
   const trackingID = session.metadata.trackingID;
   if (session.payment_status === "paid") {
-    await parcelsCollections.updateOne(
+    const parcel = await parcelsCollections.findOneAndUpdate(
       { _id: new ObjectId(session.metadata.parcelId) },
       {
         $set: {
@@ -4207,6 +3458,7 @@ app.patch("/verify-payment", async (req, res) => {
           deliveryChargeOnlinePaymentStatus: true,
         },
       },
+      { returnDocument: "after" },
     );
 
     const paymentHistory = {
@@ -4219,31 +3471,16 @@ app.patch("/verify-payment", async (req, res) => {
     };
     await paymentCollections.insertOne(paymentHistory);
 
-    if (typeof parcelsCache !== "undefined") {
-      parcelsCache.flushAll();
-    }
-
-    if (typeof parcelsStatusWiseCache !== "undefined") {
-      parcelsStatusWiseCache.flushAll();
-    }
-
-    if (typeof parcelDetailCache !== "undefined") {
-      parcelDetailCache.flushAll();
-    }
-
-    if (typeof trackingCache !== "undefined") {
-      trackingCache.flushAll();
-    }
-
-    if (typeof revenueStatsCache !== "undefined") {
-      revenueStatsCache.flushAll();
-    }
-
-    if (typeof mainDashboardCache !== "undefined") {
-      mainDashboardCache.flushAll();
-    }
-
-    // Logs Stream Here
+    invalidateParcelStatusChange({
+      trackingID,
+      senderEmail: parcel?.senderInfo?.email,
+      originHub: parcel?.serviceCenters?.origin,
+      destinationHub: parcel?.serviceCenters?.destination,
+      parcelId: session.metadata.parcelId,
+    });
+    if (parcel?.senderInfo?.email)
+      revenueStatsCache.bump(parcel.senderInfo.email);
+    mainDashboardCache.del("master_admin_main_dashboard");
 
     return res.send({
       success: true,
@@ -4258,35 +3495,25 @@ app.patch("/verify-payment", async (req, res) => {
 /* ----- OTP SYSTEM (Express Routes) -----*/
 const transporter = nodemailer.createTransport({
   service: "gmail",
-  auth: {
-    user: process.env.EMAIL,
-    pass: process.env.EMAIL_PASS,
-  },
+  auth: { user: process.env.EMAIL, pass: process.env.EMAIL_PASS },
 });
 
 app.post("/send-otp", async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).send({ error: "Email is required" });
-
   try {
     const otp = Math.floor(100000 + Math.random() * 900000);
-
     await admin
       .firestore()
       .collection("otps")
       .doc(email)
-      .set({
-        otp,
-        expiresAt: Date.now() + 5 * 60 * 1000,
-      });
-
+      .set({ otp, expiresAt: Date.now() + 5 * 60 * 1000 });
     await transporter.sendMail({
       from: `"TradeCen" <${process.env.EMAIL}>`,
       to: email,
       subject: "Your OTP Code",
       text: `Your OTP is ${otp}. It will expire in 5 minutes.`,
     });
-
     res.send({ success: true, message: "OTP sent successfully" });
   } catch (error) {
     console.error("Error sending OTP:", error);
@@ -4296,23 +3523,16 @@ app.post("/send-otp", async (req, res) => {
 
 app.post("/verify-otp", async (req, res) => {
   const { email, otp } = req.body;
-
   try {
     const doc = await admin.firestore().collection("otps").doc(email).get();
-
-    if (!doc.exists) {
+    if (!doc.exists)
       return res.status(404).send({ error: "OTP not found. Please resend." });
-    }
 
     const stored = doc.data();
-
-    if (Date.now() > stored.expiresAt) {
+    if (Date.now() > stored.expiresAt)
       return res.status(400).send({ error: "OTP has expired" });
-    }
-
-    if (parseInt(otp) !== stored.otp) {
+    if (parseInt(otp) !== stored.otp)
       return res.status(400).send({ error: "Invalid OTP code" });
-    }
 
     res.send({ success: true, message: "OTP verified" });
   } catch (error) {
@@ -4322,15 +3542,10 @@ app.post("/verify-otp", async (req, res) => {
 
 app.post("/reset-password", async (req, res) => {
   const { email, newPassword } = req.body;
-
   try {
     const user = await admin.auth().getUserByEmail(email);
-    await admin.auth().updateUser(user.uid, {
-      password: newPassword,
-    });
-
+    await admin.auth().updateUser(user.uid, { password: newPassword });
     await admin.firestore().collection("otps").doc(email).delete();
-
     res.send({ success: true, message: "Password updated successfully" });
   } catch (error) {
     res.status(500).send({ error: error.message });
@@ -4338,15 +3553,12 @@ app.post("/reset-password", async (req, res) => {
 });
 
 /* ---- START SERVER ---- */
-
 connectDB()
   .then(() => {
     console.log("🚀 MongoDB Connected");
-
     const server = app.listen(port, () => {
       console.log(`Server running on port ${port}`);
     });
-
     server.keepAliveTimeout = 65000;
     server.headersTimeout = 66000;
   })
