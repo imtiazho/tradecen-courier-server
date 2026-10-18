@@ -27,15 +27,6 @@ Geographical coverage and pricing rules are stored in MongoDB, allowing administ
 - **Coverage Management:** Inactive areas are excluded from merchant booking options.
 - **Dynamic Pricing:** Delivery costs are calculated based on base rates, additional weight, and COD fees.
 
-**Pricing Formula**
-
-\[
-\begin{aligned}
-\text{Total Cost} ={}& \text{Base Cost}\\
-&+ \lceil \text{Weight}-1\rceil \times \text{Extra Fee}\\
-&+ \text{COD Fee}
-\end{aligned}
-\]
 
 ### 2. HQ Central Finance Ledger
 
