@@ -2338,7 +2338,7 @@ app.get("/all-payouts", async (req, res) => {
       .toArray();
     const responseData = { success: true, data: result };
     allPayoutsCache.set(cacheKey, responseData);
-    res.send({ success: true, data: responseData });
+    res.send(responseData);
   } catch (error) {
     res.status(500).send({ success: false, error: "Internal Server Error" });
   }
@@ -3556,7 +3556,7 @@ app.post("/reset-password", async (req, res) => {
 connectDB()
   .then(() => {
     console.log("🚀 MongoDB Connected");
-    const server = app.listen(port, () => {
+    const server = app.listen(port, "0.0.0.0", () => {
       console.log(`Server running on port ${port}`);
     });
     server.keepAliveTimeout = 65000;
