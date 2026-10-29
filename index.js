@@ -1,10 +1,9 @@
 process.env.UV_THREADPOOL_SIZE = 128;
-const express = require("express");
-const cors = require("cors");
-const dotenv = require("dotenv");
-const dns = require("dns");
+const app = require("./src/app");
+const { admin } = require("./src/config/firebase");
 const nodemailer = require("nodemailer");
 const NodeCache = require("node-cache");
+const registerOtpRoutes = require("./src/routes/otp");
 
 class VersionedCache {
   constructor(options) {
@@ -75,25 +74,7 @@ const depositHistoryCache = new VersionedCache({
 });
 const mainDashboardCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-
-const functions = require("firebase-functions");
-const admin = require("firebase-admin");
-const serviceAccount = require("./serviceAccountKey.json");
-const { stat } = require("fs");
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
-dotenv.config();
-
-const app = express();
-const port = process.env.PORT || 5000;
-
-dns.setServers(["8.8.8.8", "8.8.4.4"]);
-
-app.use(cors());
-app.use(express.json());
+const { ObjectId } = require("mongodb");
 
 const verifyFireBaseToken = async (req, res, next) => {
   const token = req.headers.authorization;
@@ -147,12 +128,10 @@ const verifyOwner = (req, res, next) => {
       .send({ success: false, message: "Email parameter is required" });
   }
   if (requestedEmail !== decodedEmail) {
-    return res
-      .status(403)
-      .send({
-        success: false,
-        message: "Forbidden: You cannot access other user's data",
-      });
+    return res.status(403).send({
+      success: false,
+      message: "Forbidden: You cannot access other user's data",
+    });
   }
   next();
 };
@@ -199,171 +178,7 @@ const verifyHubManagerToken = async (req, res, next) => {
 
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.ab3rgue.mongodb.net/?appName=Cluster0`;
-
-const client = new MongoClient(uri, {
-  maxPoolSize: 200,
-  minPoolSize: 10,
-  maxIdleTimeMS: 1000,
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-});
-
-let db,
-  userCollections,
-  ridersCollections,
-  merchantsCollections,
-  parcelsCollections,
-  paymentCollections,
-  hubManagersCollection,
-  trackingLogsCollections,
-  payoutsCollections,
-  hqPaymentsCollections;
-
-async function connectDB() {
-  if (db)
-    return {
-      userCollections,
-      ridersCollections,
-      merchantsCollections,
-      parcelsCollections,
-      paymentCollections,
-      hubManagersCollection,
-      trackingLogsCollections,
-      payoutsCollections,
-      hqPaymentsCollections,
-    };
-
-  await client.connect();
-  db = client.db("tradeCen_DB");
-  userCollections = db.collection("users");
-  ridersCollections = db.collection("riders");
-  merchantsCollections = db.collection("merchants");
-  parcelsCollections = db.collection("parcels");
-  paymentCollections = db.collection("payments");
-  hubManagersCollection = db.collection("hubManagers");
-  trackingLogsCollections = db.collection("trackingLogs");
-  payoutsCollections = db.collection("payoutsCollections");
-  hqPaymentsCollections = db.collection("hqPaymentsCollections");
-
-  await trackingLogsCollections.createIndex({ trackingID: 1, createdAt: -1 });
-  await userCollections.createIndex({ email: 1 }, { unique: true });
-  await userCollections.createIndex({ email: 1, role: 1 });
-  await hubManagersCollection.createIndex({ email: 1 }, { unique: true });
-  await hubManagersCollection.createIndex({ region: 1, district: 1 });
-  await parcelsCollections.createIndex({
-    "serviceCenters.origin": 1,
-    deliveryStatus: 1,
-  });
-  await parcelsCollections.createIndex({
-    "serviceCenters.destination": 1,
-    deliveryStatus: 1,
-  });
-  await parcelsCollections.createIndex({
-    "senderInfo.area": 1,
-    deliveryStatus: 1,
-    inCity: 1,
-  });
-  await parcelsCollections.createIndex({
-    "receiverInfo.area": 1,
-    deliveryStatus: 1,
-  });
-  await parcelsCollections.createIndex({
-    "deliveryRider.email": 1,
-    deliveryStatus: 1,
-    createdAt: -1,
-  });
-  await parcelsCollections.createIndex({
-    "pickupRider.email": 1,
-    deliveryStatus: 1,
-    createdAt: -1,
-  });
-  await parcelsCollections.createIndex({
-    "deliveryRider.email": 1,
-    "deliveryRider.assignedAt": 1,
-    deliveryStatus: 1,
-  });
-  await parcelsCollections.createIndex({
-    "pickupRider.email": 1,
-    "pickupRider.assignedAt": 1,
-    deliveryStatus: 1,
-  });
-  await ridersCollections.createIndex({ area: 1, status: 1, workStatus: 1 });
-  await ridersCollections.createIndex({ email: 1 });
-  await ridersCollections.createIndex({
-    area: 1,
-    workStatus: 1,
-    currentTasks: 1,
-  });
-  await merchantsCollections.createIndex({ area: 1 });
-  await merchantsCollections.createIndex({ email: 1 });
-  await parcelsCollections.createIndex({
-    "senderInfo.email": 1,
-    deliveryStatus: 1,
-    merchantRevenueStatus: 1,
-  });
-  await payoutsCollections.createIndex({ email: 1, payoutStatus: 1 });
-  await payoutsCollections.createIndex({ email: 1, requestedAt: -1 });
-  await payoutsCollections.createIndex({ payoutStatus: 1, requestedAt: -1 });
-  await parcelsCollections.createIndex({
-    "senderInfo.email": 1,
-    deliveryStatus: 1,
-    createdAt: -1,
-  });
-  await parcelsCollections.createIndex({
-    "senderInfo.email": 1,
-    deliveryChargeStatus: 1,
-    deliveryStatus: 1,
-  });
-  await parcelsCollections.createIndex({
-    "senderInfo.email": 1,
-    deliveryChargeStatus: 1,
-    createdAt: -1,
-  });
-  await parcelsCollections.createIndex({
-    "serviceCenters.destination": 1,
-    deliveryStatus: 1,
-    isDepositedToHQ: 1,
-  });
-  await parcelsCollections.createIndex({
-    "serviceCenters.destination": 1,
-    deliveryStatus: 1,
-    createdAt: 1,
-  });
-  await parcelsCollections.createIndex({
-    "serviceCenters.origin": 1,
-    deliveryStatus: 1,
-    createdAt: 1,
-  });
-  await hqPaymentsCollections.createIndex({
-    hubName: 1,
-    status: 1,
-    createdAt: -1,
-  });
-  await parcelsCollections.createIndex({ deliveryStatus: 1 });
-  await parcelsCollections.createIndex({
-    status: 1,
-    revMethod: 1,
-    isDepositedToHQ: 1,
-  });
-  await parcelsCollections.createIndex({ createdAt: -1 });
-  await ridersCollections.createIndex({ currentTasks: 1 });
-
-  return {
-    userCollections,
-    ridersCollections,
-    merchantsCollections,
-    parcelsCollections,
-    paymentCollections,
-    hubManagersCollection,
-    trackingLogsCollections,
-    payoutsCollections,
-    hqPaymentsCollections,
-  };
-}
+const { connectDB } = require("./src/config/database");
 
 /* ----- Helpers ------ */
 const logTracking = async (parcel, status) => {
@@ -574,12 +389,10 @@ app.patch(
       );
 
       if (updateResult.modifiedCount === 0) {
-        return res
-          .status(404)
-          .send({
-            success: false,
-            message: "User not found or role already updated",
-          });
+        return res.status(404).send({
+          success: false,
+          message: "User not found or role already updated",
+        });
       }
 
       const userProfile = await userCollections.findOne({ email: email });
@@ -673,12 +486,10 @@ app.get("/parcels/incoming/:hubName", async (req, res) => {
     incomingParcelsCache.set(cacheKey, result);
     res.send(result);
   } catch (error) {
-    res
-      .status(500)
-      .send({
-        message: "Error fetching incoming parcels",
-        error: error.message,
-      });
+    res.status(500).send({
+      message: "Error fetching incoming parcels",
+      error: error.message,
+    });
   }
 });
 
@@ -702,12 +513,10 @@ app.get(
       pickupCache.set(cacheKey, result);
       res.send(result);
     } catch (error) {
-      res
-        .status(500)
-        .send({
-          message: "Error fetching incoming parcels",
-          error: error.message,
-        });
+      res.status(500).send({
+        message: "Error fetching incoming parcels",
+        error: error.message,
+      });
     }
   },
 );
@@ -1446,12 +1255,10 @@ app.patch("/riders/complete-return-delivered/update", async (req, res) => {
       },
     );
     if (parcelUpdateResult.modifiedCount === 0) {
-      return res
-        .status(404)
-        .send({
-          success: false,
-          message: "Parcel not found or already updated",
-        });
+      return res.status(404).send({
+        success: false,
+        message: "Parcel not found or already updated",
+      });
     }
 
     const parcelData = await parcelsCollections.findOne({
@@ -1647,12 +1454,10 @@ app.patch("/parcels/return-hub/received/:parcelId", async (req, res) => {
     managerCache.bump("global");
 
     if (managerUpdate.matchedCount === 0) {
-      return res
-        .status(404)
-        .send({
-          success: false,
-          message: "Parcel not found in Hub Manager's return request ledger.",
-        });
+      return res.status(404).send({
+        success: false,
+        message: "Parcel not found in Hub Manager's return request ledger.",
+      });
     }
 
     const parcel = await parcelsCollections.findOne({
@@ -1717,12 +1522,10 @@ app.patch("/hub/dispatch-return-to-origin/:parcelId", async (req, res) => {
       { returnDocument: "after" },
     );
     if (!updatedParcel) {
-      return res
-        .status(404)
-        .send({
-          success: false,
-          message: "Parcel not found in warehouse registry.",
-        });
+      return res.status(404).send({
+        success: false,
+        message: "Parcel not found in warehouse registry.",
+      });
     }
     await logTracking(updatedParcel, "dispatched-back-to-origin-warehouse");
     await hubManagersCollection.updateOne(
@@ -2170,13 +1973,11 @@ app.post("/request-payout", async (req, res) => {
     });
 
     if (withdrawAmount > totalRevenue) {
-      return res
-        .status(400)
-        .send({
-          success: false,
-          message:
-            "Insufficient balance! You cannot withdraw more than your available balance.",
-        });
+      return res.status(400).send({
+        success: false,
+        message:
+          "Insufficient balance! You cannot withdraw more than your available balance.",
+      });
     }
 
     const baseParcelsInfo = deliveredParcels.map((parcel) => ({
@@ -2245,13 +2046,10 @@ app.patch("/approve-payout/:id", async (req, res) => {
 
     if (status === "Completed") {
       if (!trxID) {
-        return res
-          .status(400)
-          .send({
-            success: false,
-            message:
-              "Transaction ID (TrxID) is required for completed payouts.",
-          });
+        return res.status(400).send({
+          success: false,
+          message: "Transaction ID (TrxID) is required for completed payouts.",
+        });
       }
       await payoutsCollections.updateOne(
         { _id: new ObjectId(payoutId) },
@@ -2911,13 +2709,11 @@ app.get("/hub-hand-cash/:hubName", async (req, res) => {
   } catch (error) {
     const { hubName } = req.params;
     pendingHubRequests.delete(`hub_hand_cash_${hubName}`);
-    res
-      .status(500)
-      .send({
-        success: false,
-        message: "Internal Server Error",
-        error: error.message,
-      });
+    res.status(500).send({
+      success: false,
+      message: "Internal Server Error",
+      error: error.message,
+    });
   }
 });
 
@@ -3140,12 +2936,10 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
     } = req.body;
 
     if (!depositedAmount || !parcelIds || parcelIds.length === 0) {
-      return res
-        .status(400)
-        .send({
-          success: false,
-          message: "Missing required fields: depositedAmount or parcelIds",
-        });
+      return res.status(400).send({
+        success: false,
+        message: "Missing required fields: depositedAmount or parcelIds",
+      });
     }
 
     const depositInvoice = {
@@ -3179,22 +2973,18 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
       managerCache.bump("global");
     }
 
-    res
-      .status(201)
-      .send({
-        success: true,
-        message: "Deposit request submitted to HQ successfully!",
-        depositId: insertResult.insertedId,
-      });
+    res.status(201).send({
+      success: true,
+      message: "Deposit request submitted to HQ successfully!",
+      depositId: insertResult.insertedId,
+    });
   } catch (error) {
     console.error("Deposit HQ Error:", error);
-    res
-      .status(500)
-      .send({
-        success: false,
-        message: "Internal Server Error",
-        error: error.message,
-      });
+    res.status(500).send({
+      success: false,
+      message: "Internal Server Error",
+      error: error.message,
+    });
   }
 });
 
@@ -3493,75 +3283,12 @@ app.patch("/verify-payment", async (req, res) => {
 });
 
 /* ----- OTP SYSTEM (Express Routes) -----*/
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: { user: process.env.EMAIL, pass: process.env.EMAIL_PASS },
+registerOtpRoutes(app, {
+  admin,
+  transporter: nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: process.env.EMAIL, pass: process.env.EMAIL_PASS },
+  }),
 });
 
-app.post("/send-otp", async (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).send({ error: "Email is required" });
-  try {
-    const otp = Math.floor(100000 + Math.random() * 900000);
-    await admin
-      .firestore()
-      .collection("otps")
-      .doc(email)
-      .set({ otp, expiresAt: Date.now() + 5 * 60 * 1000 });
-    await transporter.sendMail({
-      from: `"TradeCen" <${process.env.EMAIL}>`,
-      to: email,
-      subject: "Your OTP Code",
-      text: `Your OTP is ${otp}. It will expire in 5 minutes.`,
-    });
-    res.send({ success: true, message: "OTP sent successfully" });
-  } catch (error) {
-    console.error("Error sending OTP:", error);
-    res.status(500).send({ error: error.message });
-  }
-});
-
-app.post("/verify-otp", async (req, res) => {
-  const { email, otp } = req.body;
-  try {
-    const doc = await admin.firestore().collection("otps").doc(email).get();
-    if (!doc.exists)
-      return res.status(404).send({ error: "OTP not found. Please resend." });
-
-    const stored = doc.data();
-    if (Date.now() > stored.expiresAt)
-      return res.status(400).send({ error: "OTP has expired" });
-    if (parseInt(otp) !== stored.otp)
-      return res.status(400).send({ error: "Invalid OTP code" });
-
-    res.send({ success: true, message: "OTP verified" });
-  } catch (error) {
-    res.status(500).send({ error: error.message });
-  }
-});
-
-app.post("/reset-password", async (req, res) => {
-  const { email, newPassword } = req.body;
-  try {
-    const user = await admin.auth().getUserByEmail(email);
-    await admin.auth().updateUser(user.uid, { password: newPassword });
-    await admin.firestore().collection("otps").doc(email).delete();
-    res.send({ success: true, message: "Password updated successfully" });
-  } catch (error) {
-    res.status(500).send({ error: error.message });
-  }
-});
-
-/* ---- START SERVER ---- */
-connectDB()
-  .then(() => {
-    console.log("🚀 MongoDB Connected");
-    const server = app.listen(port, "0.0.0.0", () => {
-      console.log(`Server running on port ${port}`);
-    });
-    server.keepAliveTimeout = 65000;
-    server.headersTimeout = 66000;
-  })
-  .catch((err) => {
-    console.error("❌ DB connection failed:", err);
-  });
+module.exports = app;
