@@ -3,45 +3,16 @@ process.env.UV_THREADPOOL_SIZE = 128;
 
 const app = require("./index");
 const { connectDB, closeDB } = require("./src/config/database");
+const createServerLifecycle = require("./src/server-lifecycle");
 
 const port = process.env.PORT || 5000;
-let server;
-let shuttingDown = false;
+const lifecycle = createServerLifecycle({ app, connectDB, closeDB, port });
 
-async function start() {
-  await connectDB();
-  console.log("🚀 MongoDB Connected");
+process.on("SIGINT", () => lifecycle.shutdown("SIGINT"));
+process.on("SIGTERM", () => lifecycle.shutdown("SIGTERM"));
 
-  server = app.listen(port, "0.0.0.0", () => {
-    console.log(`Server running on port ${port}`);
-  });
-  server.keepAliveTimeout = 65000;
-  server.headersTimeout = 66000;
-}
-
-async function shutdown(signal) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`${signal} received; shutting down`);
-
-  try {
-    if (server) {
-      await new Promise((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
-    }
-    await closeDB();
-    process.exitCode = 0;
-  } catch (error) {
-    console.error("Error during server shutdown:", error);
-    process.exitCode = 1;
-  }
-}
-
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-
-start().catch((error) => {
-  console.error("❌ DB connection failed:", error);
+lifecycle.start().catch((error) => {
+  if (lifecycle.shutdownRequested) return;
+  console.error("❌ Server startup failed:", error);
   process.exitCode = 1;
 });

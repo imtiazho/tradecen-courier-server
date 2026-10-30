@@ -78,15 +78,19 @@ const expectedRoutes = [
 ];
 
 test("all legacy routes are registered once across the workflow routers", () => {
-  const middleware = () => {};
+  const middleware = (name) => {
+    const handler = () => {};
+    handler.auditName = name;
+    return handler;
+  };
   const dependencies = {
-    verifyFireBaseToken: middleware,
-    verifyRoles: () => middleware,
-    verifyOwner: middleware,
-    verifyAdminToken: middleware,
-    verifyMerchantToken: middleware,
-    verifyRiderToken: middleware,
-    verifyHubManagerToken: middleware,
+    verifyFireBaseToken: middleware("verifyFireBaseToken"),
+    verifyRoles: (...roles) => middleware(`verifyRoles(${roles.join(",")})`),
+    verifyOwner: middleware("verifyOwner"),
+    verifyAdminToken: middleware("verifyAdminToken"),
+    verifyMerchantToken: middleware("verifyMerchantToken"),
+    verifyRiderToken: middleware("verifyRiderToken"),
+    verifyHubManagerToken: middleware("verifyHubManagerToken"),
   };
 
   const app = express();
@@ -95,19 +99,88 @@ test("all legacy routes are registered once across the workflow routers", () => 
   function collectRoutes(stack) {
     return stack.flatMap((layer) => {
       if (layer.route) {
+        const middlewareNames = layer.route.stack
+          .map((routeLayer) => routeLayer.handle.auditName)
+          .filter(Boolean);
         return Object.keys(layer.route.methods)
           .filter((method) => layer.route.methods[method])
-          .map((method) => `${method.toUpperCase()} ${layer.route.path}`);
+          .map((method) => ({
+            key: `${method.toUpperCase()} ${layer.route.path}`,
+            middleware: middlewareNames,
+          }));
       }
       return layer.handle?.stack ? collectRoutes(layer.handle.stack) : [];
     });
   }
 
-  const registeredRoutes = collectRoutes(app.router.stack);
+  const registered = collectRoutes(app.router.stack);
+  const registeredRoutes = registered.map(({ key }) => key);
 
   assert.equal(registeredRoutes.length, 68);
   assert.equal(new Set(registeredRoutes).size, registeredRoutes.length);
   assert.deepEqual([...registeredRoutes].sort(), [...expectedRoutes].sort());
+
+  const routePatterns = registered.map(({ key }) => {
+    const [method, routePath] = key.split(" ");
+    return { method, segments: routePath.split("/").filter(Boolean), routePath };
+  });
+  for (let i = 0; i < routePatterns.length; i += 1) {
+    for (let j = i + 1; j < routePatterns.length; j += 1) {
+      const first = routePatterns[i];
+      const second = routePatterns[j];
+      if (first.method !== second.method || first.segments.length !== second.segments.length) continue;
+      const canMatchSamePath = first.segments.every((segment, index) =>
+        segment === second.segments[index] || segment.startsWith(":") || second.segments[index].startsWith(":"),
+      );
+      assert.equal(
+        canMatchSamePath,
+        false,
+        `same-method routes can shadow each other: ${first.routePath} and ${second.routePath}`,
+      );
+    }
+  }
+
+  const expectedMiddleware = {
+    "GET /user/:email/role": ["verifyFireBaseToken", "verifyOwner"],
+    "PATCH /users/make-hub-manager": ["verifyFireBaseToken", "verifyAdminToken"],
+    "GET /parcels/pickups/:hubName": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "GET /warehouse/sorting-house/:hubName": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "GET /parcels/out-for-delivery/:hubName": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "GET /parcels/hub-delivered/:hubName": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "PATCH /riders/hold-parcel/update": ["verifyFireBaseToken", "verifyRiderToken"],
+    "GET /riders": ["verifyFireBaseToken", "verifyRoles(admin,hub-manager,rider)"],
+    "GET /riders/available/:areaName": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "PATCH /riders/:id": ["verifyFireBaseToken", "verifyAdminToken"],
+    "PATCH /parcels/assign-rider": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "PATCH /parcels/assign-delivery": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "PATCH /riders/complete-pickup/update": ["verifyFireBaseToken", "verifyRiderToken"],
+    "PATCH /riders/complete-delivered/update": ["verifyFireBaseToken", "verifyRiderToken"],
+    "GET /all-merchants": ["verifyFireBaseToken", "verifyAdminToken"],
+    "GET /area-merchant/:hubName": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "GET /merchant/:email": ["verifyFireBaseToken", "verifyMerchantToken", "verifyOwner"],
+    "PATCH /merchant-update/:email": ["verifyFireBaseToken", "verifyMerchantToken", "verifyOwner"],
+    "GET /parcels": ["verifyFireBaseToken", "verifyMerchantToken", "verifyOwner"],
+    "GET /late-invoices/:email": ["verifyFireBaseToken", "verifyMerchantToken", "verifyOwner"],
+    "GET /parcels/stats/:email": ["verifyFireBaseToken", "verifyMerchantToken", "verifyOwner"],
+    "GET /revenue/stats/:email": ["verifyFireBaseToken", "verifyMerchantToken", "verifyOwner"],
+    "POST /parcels": ["verifyFireBaseToken", "verifyMerchantToken", "verifyOwner"],
+    "DELETE /parcel/:id": ["verifyFireBaseToken", "verifyMerchantToken", "verifyOwner"],
+    "PATCH /parcels/dispatch/:id": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "PATCH /parcels/dest-hub/received/:id": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "PATCH /parcels/origin-hub/received/:id": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "GET /hub-profit-metrics/:hubName": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "GET /hub-aging-status/:hubName": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "GET /hub-efficiency-flow/:hubName": ["verifyFireBaseToken", "verifyHubManagerToken"],
+    "GET /hub-deposit-history": ["verifyFireBaseToken", "verifyRoles(hub-manager,admin)"],
+    "PATCH /approve-deposit/:id": ["verifyFireBaseToken", "verifyAdminToken"],
+  };
+  for (const { key, middleware: actual } of registered) {
+    assert.deepEqual(
+      actual,
+      expectedMiddleware[key] || [],
+      `middleware order changed for ${key}`,
+    );
+  }
 });
 
 test("every router dependency is exported by the shared dependency factory", () => {

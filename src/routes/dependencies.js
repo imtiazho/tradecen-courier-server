@@ -3,7 +3,7 @@ const nodemailer = require("nodemailer");
 const stripeFactory = require("stripe");
 const { ObjectId } = require("mongodb");
 
-function createRouteDependencies({ admin, connectDB }) {
+function createRouteDependencies({ admin, connectDB, withTransaction }) {
   class VersionedCache {
     constructor(options) {
       this.store = new NodeCache(options);
@@ -232,7 +232,7 @@ function createRouteDependencies({ admin, connectDB }) {
     auth: { user: process.env.EMAIL, pass: process.env.EMAIL_PASS },
   });
 
-  return { trackingCache, usersCache, userCache, userRoleCache, managerCache, incomingParcelsCache, merchantParcelsCache, pickupCache, sortingCache, outForDeliveryCache, hubDeliveredCache, riderCache, ridersCache, availableRidersCache, returnWarehouseCache, allMerchantsCache, merchantsAreaWiseCache, targetedMerchantCache, payoutSummaryCache, allPayoutsCache, parcelDetailCache, lateInvoicesCache, merchantUnpaidCache, parcelsStatusWiseCache, parcelStatsCache, revenueStatsCache, hubHandCashCache, hubProfitCache, hubAgingCache, hubEfficiencyCache, depositHistoryCache, mainDashboardCache, verifyFireBaseToken, verifyRoles, verifyOwner, verifyAdminToken, verifyMerchantToken, verifyRiderToken, verifyHubManagerToken, stripe, logTracking, invalidateParcelStatusChange, pendingRequests, pendingHubRequests, pendingHubProfitRequests, pendingHubAgingRequests, pendingHubEfficiencyRequests, pendingDepositHistoryRequests, pendingDashboardRequests, ObjectId, connectDB, admin, transporter };
+    return { trackingCache, usersCache, userCache, userRoleCache, managerCache, incomingParcelsCache, merchantParcelsCache, pickupCache, sortingCache, outForDeliveryCache, hubDeliveredCache, riderCache, ridersCache, availableRidersCache, returnWarehouseCache, allMerchantsCache, merchantsAreaWiseCache, targetedMerchantCache, payoutSummaryCache, allPayoutsCache, parcelDetailCache, lateInvoicesCache, merchantUnpaidCache, parcelsStatusWiseCache, parcelStatsCache, revenueStatsCache, hubHandCashCache, hubProfitCache, hubAgingCache, hubEfficiencyCache, depositHistoryCache, mainDashboardCache, verifyFireBaseToken, verifyRoles, verifyOwner, verifyAdminToken, verifyMerchantToken, verifyRiderToken, verifyHubManagerToken, stripe, logTracking, invalidateParcelStatusChange, pendingRequests, pendingHubRequests, pendingHubProfitRequests, pendingHubAgingRequests, pendingHubEfficiencyRequests, pendingDepositHistoryRequests, pendingDashboardRequests, ObjectId, connectDB, withTransaction, admin, transporter };
 }
 
 module.exports = createRouteDependencies;

@@ -171,4 +171,13 @@ async function closeDB() {
   db = undefined;
 }
 
-module.exports = { connectDB, closeDB };
+async function withTransaction(callback) {
+  const session = client.startSession();
+  try {
+    return await session.withTransaction(() => callback(session));
+  } finally {
+    await session.endSession();
+  }
+}
+
+module.exports = { connectDB, closeDB, withTransaction };

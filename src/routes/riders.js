@@ -2,7 +2,7 @@ const express = require("express");
 
 function createRidersRouter(dependencies) {
   const router = express.Router();
-  const { usersCache, userCache, userRoleCache, managerCache, riderCache, ridersCache, availableRidersCache, returnWarehouseCache, targetedMerchantCache, verifyFireBaseToken, verifyRoles, verifyAdminToken, verifyRiderToken, verifyHubManagerToken, logTracking, invalidateParcelStatusChange, ObjectId, connectDB, admin } = dependencies;
+  const { usersCache, userCache, userRoleCache, managerCache, riderCache, ridersCache, availableRidersCache, returnWarehouseCache, targetedMerchantCache, verifyFireBaseToken, verifyRoles, verifyAdminToken, verifyRiderToken, verifyHubManagerToken, logTracking, invalidateParcelStatusChange, ObjectId, connectDB, withTransaction, admin } = dependencies;
 
   router.get("/rider/:email", async (req, res) => {
     try {
@@ -1075,10 +1075,26 @@ function createRidersRouter(dependencies) {
 
   router.delete("/riders/:id", async (req, res) => {
     try {
-      const { ridersCollections, usersCollection } = await connectDB();
+      const { ridersCollections, userCollections } = await connectDB();
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
-      const riderData = await ridersCollections.findOne(query);
+      let riderData;
+      let deleteResult;
+      let userUpdateResult;
+
+      await withTransaction(async (session) => {
+        riderData = await ridersCollections.findOne(query, { session });
+        if (!riderData) return;
+
+        deleteResult = await ridersCollections.deleteOne(query, { session });
+        if (deleteResult.deletedCount > 0) {
+          userUpdateResult = await userCollections.updateOne(
+            { email: riderData.email },
+            { $set: { role: "user" } },
+            { session },
+          );
+        }
+      });
 
       if (!riderData) {
         return res
@@ -1086,29 +1102,27 @@ function createRidersRouter(dependencies) {
           .send({ success: false, message: "Rider request not found" });
       }
 
-      const deleteResult = await ridersCollections.deleteOne(query);
-      if (deleteResult.deletedCount > 0) {
-        const userUpdateResult = await usersCollection.updateOne(
-          { email: riderData.email },
-          { $set: { role: "user" } },
+      if (deleteResult.deletedCount === 0) {
+        return res
+          .status(404)
+          .send({ success: false, message: "Rider request not found" });
+      }
+
+      userCache.del(`user_${riderData.email}`);
+      userRoleCache.del(`user_role_${riderData.email}`);
+      riderCache.del(`rider_${riderData.email}`);
+      ridersCache.bump(riderData.area || "global");
+      if (riderData.area)
+        availableRidersCache.del(
+          `available_riders_${riderData.area.toLowerCase()}`,
         );
 
-        userCache.del(`user_${riderData.email}`);
-        userRoleCache.del(`user_role_${riderData.email}`);
-        riderCache.del(`rider_${riderData.email}`);
-        ridersCache.bump(riderData.area || "global");
-        if (riderData.area)
-          availableRidersCache.del(
-            `available_riders_${riderData.area.toLowerCase()}`,
-          );
-
-        res.send({
-          success: true,
-          message: "Rider request deleted and user role reset to user",
-          deleteResult,
-          userUpdateResult,
-        });
-      }
+      res.send({
+        success: true,
+        message: "Rider request deleted and user role reset to user",
+        deleteResult,
+        userUpdateResult,
+      });
     } catch (error) {
       console.error("Error rejecting rider:", error);
       res.status(500).send({ success: false, message: "Internal Server Error" });
