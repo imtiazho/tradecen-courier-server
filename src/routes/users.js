@@ -86,6 +86,11 @@ function createUsersRouter(dependencies) {
 
         const { userCollections } = await connectDB();
         const user = await userCollections.findOne({ email: req.params.email });
+        if (!user) {
+          return res
+            .status(404)
+            .send({ success: false, message: "User not found in database" });
+        }
         userRoleCache.set(cacheKey, user.role);
         res.send({ role: user.role });
       } catch (error) {

@@ -141,6 +141,8 @@ test("all legacy routes are registered once across the workflow routers", () => 
   }
 
   const expectedMiddleware = {
+    "GET /payment-payout-summary/:email": ["verifyFireBaseToken", "verifyMerchantToken", "verifyOwner"],
+    "POST /request-payout": ["verifyFireBaseToken", "verifyMerchantToken", "verifyOwner"],
     "GET /user/:email/role": ["verifyFireBaseToken", "verifyOwner"],
     "PATCH /users/make-hub-manager": ["verifyFireBaseToken", "verifyAdminToken"],
     "GET /parcels/pickups/:hubName": ["verifyFireBaseToken", "verifyHubManagerToken"],

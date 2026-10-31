@@ -2,9 +2,14 @@ const express = require("express");
 
 function createPayoutsRouter(dependencies) {
   const router = express.Router();
-  const { merchantParcelsCache, allMerchantsCache, payoutSummaryCache, allPayoutsCache, merchantUnpaidCache, parcelsStatusWiseCache, revenueStatsCache, ObjectId, connectDB, admin } = dependencies;
+  const { merchantParcelsCache, allMerchantsCache, payoutSummaryCache, allPayoutsCache, merchantUnpaidCache, parcelsStatusWiseCache, revenueStatsCache, verifyFireBaseToken, verifyMerchantToken, verifyOwner, ObjectId, connectDB, admin } = dependencies;
 
-  router.get("/payment-payout-summary/:email", async (req, res) => {
+  router.get(
+    "/payment-payout-summary/:email",
+    verifyFireBaseToken,
+    verifyMerchantToken,
+    verifyOwner,
+    async (req, res) => {
     try {
       const email = req.params.email;
       const cacheKey = `payout_summary_${email.toLowerCase()}`;
@@ -71,9 +76,15 @@ function createPayoutsRouter(dependencies) {
     } catch (error) {
       res.status(500).send({ success: false, error: "Internal Server Error" });
     }
-  });
+    },
+  );
 
-  router.post("/request-payout", async (req, res) => {
+  router.post(
+    "/request-payout",
+    verifyFireBaseToken,
+    verifyMerchantToken,
+    verifyOwner,
+    async (req, res) => {
     try {
       const { parcelsCollections, paymentCollections, payoutsCollections } =
         await connectDB();
@@ -156,7 +167,8 @@ function createPayoutsRouter(dependencies) {
     } catch (error) {
       res.status(500).send({ success: false, error: "Internal Server Error" });
     }
-  });
+    },
+  );
 
   router.patch("/approve-payout/:id", async (req, res) => {
     try {

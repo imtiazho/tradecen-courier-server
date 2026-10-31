@@ -1,10 +1,12 @@
 function closeHttpServer(server) {
-  const close = () => new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error && error.code !== "ERR_SERVER_NOT_RUNNING") return reject(error);
-      resolve();
+  const close = () =>
+    new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error && error.code !== "ERR_SERVER_NOT_RUNNING")
+          return reject(error);
+        resolve();
+      });
     });
-  });
 
   if (server.listening) return close();
 
@@ -65,7 +67,8 @@ function createServerLifecycle({
   let closeDatabasePromise;
 
   function closeDatabaseOnce() {
-    if (!closeDatabasePromise) closeDatabasePromise = Promise.resolve().then(closeDB);
+    if (!closeDatabasePromise)
+      closeDatabasePromise = Promise.resolve().then(closeDB);
     return closeDatabasePromise;
   }
 
@@ -78,7 +81,10 @@ function createServerLifecycle({
       try {
         await closeDatabaseOnce();
       } catch (closeError) {
-        logger.error("Error closing MongoDB after startup failure:", closeError);
+        logger.error(
+          "Error closing MongoDB after startup failure:",
+          closeError,
+        );
       }
       throw error;
     }
@@ -86,9 +92,11 @@ function createServerLifecycle({
     if (shutdownRequested) {
       try {
         await closeDatabaseOnce();
-        await closeDB();
       } catch (error) {
-        logger.error("Error confirming MongoDB closure after startup shutdown:", error);
+        logger.error(
+          "Error confirming MongoDB closure after startup shutdown:",
+          error,
+        );
         processRef.exitCode = 1;
       }
       return null;
@@ -106,7 +114,10 @@ function createServerLifecycle({
       try {
         await closeDatabaseOnce();
       } catch (closeError) {
-        logger.error("Error closing MongoDB after server startup failure:", closeError);
+        logger.error(
+          "Error closing MongoDB after server startup failure:",
+          closeError,
+        );
       }
       throw error;
     }

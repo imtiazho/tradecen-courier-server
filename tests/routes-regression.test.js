@@ -188,6 +188,23 @@ test("hub manager listing and promotion resolve their MongoDB collections and pr
   });
 });
 
+test("user role lookup returns the existing not-found response when no user exists", async () => {
+  const { app, collections } = makeHarness();
+  collections.userCollections.findOne = async () => null;
+
+  const response = await invoke(locateRoute(app, "get", "/user/:email/role"), {
+    query: {},
+    params: { email: "missing@example.test" },
+    body: {},
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(response.body, {
+    success: false,
+    message: "User not found in database",
+  });
+});
+
 test("rider status update reaches the injected rider collection", async () => {
   const { app, collections } = makeHarness();
   collections.ridersCollections.findOne = async () => ({ area: "Uttara" });
@@ -386,6 +403,36 @@ test("hub parcel lifecycle keeps its auth middleware order and tracking side eff
   assert.ok(calls.some((call) => Array.isArray(call) && call[0] === "tracking"));
 });
 
+test("extracted parcel query handlers use injected collections and preserve response contracts", async () => {
+  const parcel = { _id: "parcel-7", trackingID: "T-7", senderInfo: { email: "merchant@example.test" } };
+  const { app, collections } = makeHarness();
+  collections.parcelsCollections.find = () => cursor([parcel]);
+  collections.parcelsCollections.findOne = async () => parcel;
+  collections.parcelsCollections.countDocuments = async () => 1;
+  collections.trackingLogsCollections.find = () => cursor([{ trackingID: "T-7", deliveryStatus: "delivered" }]);
+
+  const detail = await invoke(locateRoute(app, "get", "/parcel/:parcelID"), {
+    query: {}, params: { parcelID: "parcel-7" }, body: {},
+  });
+  assert.equal(detail.statusCode, 200);
+  assert.deepEqual(detail.body, parcel);
+
+  const tracking = await invoke(locateRoute(app, "get", "/tracking/:id"), {
+    query: {}, params: { id: "T-7" }, body: {},
+  });
+  assert.equal(tracking.statusCode, 200);
+  assert.deepEqual(tracking.body, {
+    success: true,
+    result: [{ trackingID: "T-7", deliveryStatus: "delivered" }],
+  });
+
+  const listing = await invoke(locateRoute(app, "get", "/parcels"), {
+    query: { email: "merchant@example.test" }, params: {}, body: {},
+  });
+  assert.equal(listing.statusCode, 200);
+  assert.deepEqual(listing.body, { count: 1, data: [parcel] });
+});
+
 test("merchant creation and payout listing use their injected collections", async () => {
   const { app, collections } = makeHarness();
   const merchantResponse = await invoke(locateRoute(app, "post", "/merchants"), {
@@ -426,7 +473,7 @@ test("merchant creation and payout listing use their injected collections", asyn
 });
 
 test("tracking query, hub finance, checkout, and OTP verification execute with mocked services", async () => {
-  const { app, collections } = makeHarness();
+  const { app, collections, dependencies } = makeHarness();
   collections.trackingLogsCollections.find = () => cursor([{ trackingID: "T-2" }]);
   const tracking = await invoke(locateRoute(app, "get", "/tracking/:id"), {
     query: {}, params: { id: "T-2" }, body: {},
@@ -501,20 +548,54 @@ test("tracking query, hub finance, checkout, and OTP verification execute with m
     paidAt: verifiedPayment.body.paidAt,
   });
 
+  let otpDocument = { otp: 123456, expiresAt: Date.now() + 60000 };
+  dependencies.admin.firestore = () => ({
+    collection: () => ({
+      doc: () => ({
+        get: async () => ({ exists: Boolean(otpDocument), data: () => otpDocument }),
+        set: async (data, options) => {
+          otpDocument = options?.merge ? { ...otpDocument, ...data } : data;
+        },
+        delete: async () => { otpDocument = null; },
+      }),
+    }),
+  });
+
   const otp = await invoke(locateRoute(app, "post", "/verify-otp"), {
     query: {}, params: {}, body: { email: "user@example.test", otp: "123456" },
   });
   assert.deepEqual(otp.body, { success: true, message: "OTP verified" });
-
-  const sendOtp = await invoke(locateRoute(app, "post", "/send-otp"), {
-    query: {}, params: {}, body: { email: "user@example.test" },
-  });
-  assert.deepEqual(sendOtp.body, { success: true, message: "OTP sent successfully" });
+  assert.ok(otpDocument.verifiedAt);
 
   const resetPassword = await invoke(locateRoute(app, "post", "/reset-password"), {
     query: {}, params: {}, body: { email: "user@example.test", newPassword: "test-password" },
   });
   assert.deepEqual(resetPassword.body, { success: true, message: "Password updated successfully" });
+  assert.equal(otpDocument, null);
+
+  const sendOtp = await invoke(locateRoute(app, "post", "/send-otp"), {
+    query: {}, params: {}, body: { email: "user@example.test" },
+  });
+  assert.deepEqual(sendOtp.body, { success: true, message: "OTP sent successfully" });
+});
+
+test("password reset is rejected unless OTP verification is still valid", async () => {
+  const { app, dependencies } = makeHarness();
+  const otpDocument = { otp: 123456, expiresAt: Date.now() + 60000 };
+  dependencies.admin.firestore = () => ({
+    collection: () => ({
+      doc: () => ({
+        get: async () => ({ exists: true, data: () => otpDocument }),
+      }),
+    }),
+  });
+
+  const response = await invoke(locateRoute(app, "post", "/reset-password"), {
+    query: {}, params: {}, body: { email: "user@example.test", newPassword: "test-password" },
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.body, { error: "OTP verification required" });
 });
 
 test("tracking query preserves its database-failure response", async () => {

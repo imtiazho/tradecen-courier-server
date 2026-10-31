@@ -4,7 +4,7 @@ function createRidersRouter(dependencies) {
   const router = express.Router();
   const { usersCache, userCache, userRoleCache, managerCache, riderCache, ridersCache, availableRidersCache, returnWarehouseCache, targetedMerchantCache, verifyFireBaseToken, verifyRoles, verifyAdminToken, verifyRiderToken, verifyHubManagerToken, logTracking, invalidateParcelStatusChange, ObjectId, connectDB, withTransaction, admin } = dependencies;
 
-  router.get("/rider/:email", async (req, res) => {
+  router.get("/rider/:email",  async (req, res) => {
     try {
       const email = req.params.email;
       const cacheKey = `rider_${email}`;

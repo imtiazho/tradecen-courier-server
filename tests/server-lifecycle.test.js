@@ -6,7 +6,7 @@ const createServerLifecycle = require("../src/server-lifecycle");
 
 const silentLogger = { log() {}, error() {} };
 
-test("shutdown during a pending MongoDB connection prevents the server from listening", async () => {
+test("shutdown during a pending MongoDB connection prevents listening and closes MongoDB once", async () => {
   let finishConnection;
   let listenCount = 0;
   let closeDatabaseCount = 0;
@@ -27,8 +27,31 @@ test("shutdown during a pending MongoDB connection prevents the server from list
   assert.equal(await startup, null);
 
   assert.equal(listenCount, 0);
-  assert.equal(closeDatabaseCount, 2);
+  assert.equal(closeDatabaseCount, 1);
   assert.equal(processRef.exitCode, 0);
+});
+
+test("shutdown during a pending MongoDB connection closes once when connection fails", async () => {
+  let failConnection;
+  let listenCount = 0;
+  let closeDatabaseCount = 0;
+  const lifecycle = createServerLifecycle({
+    app: { listen() { listenCount += 1; throw new Error("must not listen"); } },
+    connectDB: () => new Promise((resolve, reject) => { failConnection = reject; }),
+    closeDB: async () => { closeDatabaseCount += 1; },
+    port: 5000,
+    logger: silentLogger,
+    processRef: {},
+  });
+
+  const startup = lifecycle.start();
+  const shutdown = lifecycle.shutdown("SIGTERM");
+  await shutdown;
+  failConnection(new Error("connection failed"));
+
+  await assert.rejects(startup, /connection failed/);
+  assert.equal(listenCount, 0);
+  assert.equal(closeDatabaseCount, 1);
 });
 
 test("normal startup listens once and duplicate shutdown closes server and database once", async () => {

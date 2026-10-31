@@ -30,7 +30,8 @@ function createOtpRouter(dependencies) {
   router.post("/verify-otp", async (req, res) => {
       const { email, otp } = req.body;
       try {
-        const doc = await admin.firestore().collection("otps").doc(email).get();
+        const otpDoc = admin.firestore().collection("otps").doc(email);
+        const doc = await otpDoc.get();
         if (!doc.exists)
           return res.status(404).send({ error: "OTP not found. Please resend." });
 
@@ -40,6 +41,7 @@ function createOtpRouter(dependencies) {
         if (parseInt(otp) !== stored.otp)
           return res.status(400).send({ error: "Invalid OTP code" });
 
+        await otpDoc.set({ verifiedAt: Date.now() }, { merge: true });
         res.send({ success: true, message: "OTP verified" });
       } catch (error) {
         res.status(500).send({ error: error.message });
@@ -49,9 +51,23 @@ function createOtpRouter(dependencies) {
   router.post("/reset-password", async (req, res) => {
       const { email, newPassword } = req.body;
       try {
+        const otpDoc = admin.firestore().collection("otps").doc(email);
+        const otpSnapshot = await otpDoc.get();
+        if (!otpSnapshot.exists) {
+          return res.status(400).send({ error: "OTP verification required" });
+        }
+
+        const storedOtp = otpSnapshot.data();
+        if (!storedOtp.verifiedAt) {
+          return res.status(400).send({ error: "OTP verification required" });
+        }
+        if (Date.now() > storedOtp.expiresAt) {
+          return res.status(400).send({ error: "OTP has expired" });
+        }
+
         const user = await admin.auth().getUserByEmail(email);
         await admin.auth().updateUser(user.uid, { password: newPassword });
-        await admin.firestore().collection("otps").doc(email).delete();
+        await otpDoc.delete();
         res.send({ success: true, message: "Password updated successfully" });
       } catch (error) {
         res.status(500).send({ error: error.message });
