@@ -68,18 +68,34 @@ function makeHarness(overrides = {}) {
     calls.push(name);
     next();
   };
+  const firebaseMiddleware = (req, res, next) => {
+    calls.push("firebase");
+    req.decoded_email = req.body?.email || req.query?.email || req.params?.email;
+    next();
+  };
   Object.assign(dependencies, {
     connectDB: async () => collections,
     withTransaction: async (callback) => callback({}),
-    verifyFireBaseToken: middleware("firebase"),
+    verifyFireBaseToken: firebaseMiddleware,
     verifyAdminToken: middleware("admin"),
     verifyMerchantToken: middleware("merchant"),
     verifyRiderToken: middleware("rider"),
     verifyHubManagerToken: middleware("hub-manager"),
+    verifyAssignedHub: (req, res, next) => {
+      calls.push("assigned-hub");
+      req.assignedHubName = "Dhaka";
+      next();
+    },
+    verifyParcelHub: (field) => (req, res, next) => {
+      calls.push(`parcel-hub:${field}`);
+      req.authorizedParcelHubField = field;
+      next();
+    },
     verifyOwner: middleware("owner"),
     verifyRoles: (...roles) => {
       return (req, res, next) => {
         calls.push(`roles:${roles.join(",")}`);
+        req.authorizationRole = roles.includes("admin") ? "admin" : roles[0];
         next();
       };
     },
@@ -116,6 +132,10 @@ function makeHarness(overrides = {}) {
             set: async () => ({}),
             delete: async () => ({}),
           }),
+        }),
+        runTransaction: async (callback) => callback({
+          get: async (doc) => doc.get(),
+          set: (doc, data, options) => doc.set(data, options),
         }),
       }),
     },
@@ -181,7 +201,7 @@ test("hub manager listing and promotion resolve their MongoDB collections and pr
   const promotion = await invoke(locateRoute(app, "patch", "/users/make-hub-manager"), {
     query: {}, params: {}, body: { email: manager.email, region: "R", district: "D", hubName: manager.hubName },
   });
-  assert.deepEqual(calls.slice(0, 2), ["firebase", "admin"]);
+  assert.deepEqual(calls.slice(-2), ["firebase", "admin"]);
   assert.deepEqual(promotion.body, {
     success: true,
     message: "User promoted and added to Hub Managers collection",
@@ -307,27 +327,36 @@ test("rider deletion rolls back if the associated user update fails", async () =
 
 test("parcel booking and rider pickup, assignment, delivery, and return handlers execute", async () => {
   const parcel = {
-    _id: "parcel-1",
+    _id: "333333333333333333333333",
     trackingID: "T-3",
     parcelName: "Package",
     codAmount: 500,
     senderInfo: { email: "merchant@example.test", name: "Merchant", address: "A", phone: "1" },
     receiverInfo: { name: "Receiver", address: "B", phone: "2", area: "North" },
-    serviceCenters: { origin: "South", destination: "North" },
+    serviceCenters: { origin: "Dhaka", destination: "Dhaka" },
+    deliveryStatus: "parcel-created",
   };
   const { app, calls, collections } = makeHarness();
   collections.parcelsCollections.findOne = async () => parcel;
-  collections.ridersCollections.findOne = async () => ({ email: "rider@example.test", area: "North" });
+  collections.ridersCollections.findOne = async () => ({
+    _id: "444444444444444444444444",
+    email: "rider@example.test",
+    name: "Rider",
+    phone: "3",
+    area: "Dhaka",
+    workStatus: "available",
+    currentTasks: 0,
+  });
 
   const booking = await invoke(locateRoute(app, "post", "/parcels"), {
-    query: {}, params: {}, body: parcel,
+    query: {}, params: {}, body: { ...parcel, email: "merchant@example.test" },
   });
   assert.deepEqual(booking.body, { insertedId: "inserted-id" });
   assert.ok(calls.some((call) => Array.isArray(call) && call[0] === "tracking"));
 
   const assignment = await invoke(locateRoute(app, "patch", "/parcels/assign-rider"), {
     query: {}, params: {}, body: {
-      parcelId: "parcel-1", riderId: "rider-1", riderName: "Rider",
+      parcelId: "333333333333333333333333", riderId: "444444444444444444444444", riderName: "Rider",
       riderEmail: "rider@example.test", riderPhone: "3", trackingID: "T-3",
     },
   });
@@ -398,13 +427,13 @@ test("hub parcel lifecycle keeps its auth middleware order and tracking side eff
   const response = await invoke(locateRoute(app, "patch", "/parcels/origin-hub/received/:id"), {
     query: {}, params: { id: "0123456789abcdef01234567" }, body: {},
   });
-  assert.deepEqual(calls.slice(0, 2), ["firebase", "hub-manager"]);
+  assert.deepEqual(calls.slice(0, 4), ["firebase", "hub-manager", "assigned-hub", "parcel-hub:origin"]);
   assert.deepEqual(response.body, { success: true, message: "Parcel status updated to in-transit" });
   assert.ok(calls.some((call) => Array.isArray(call) && call[0] === "tracking"));
 });
 
 test("extracted parcel query handlers use injected collections and preserve response contracts", async () => {
-  const parcel = { _id: "parcel-7", trackingID: "T-7", senderInfo: { email: "merchant@example.test" } };
+  const parcel = { _id: "aaaaaaaaaaaaaaaaaaaaaaaa", trackingID: "T-7", senderInfo: { email: "merchant@example.test" } };
   const { app, collections } = makeHarness();
   collections.parcelsCollections.find = () => cursor([parcel]);
   collections.parcelsCollections.findOne = async () => parcel;
@@ -412,7 +441,7 @@ test("extracted parcel query handlers use injected collections and preserve resp
   collections.trackingLogsCollections.find = () => cursor([{ trackingID: "T-7", deliveryStatus: "delivered" }]);
 
   const detail = await invoke(locateRoute(app, "get", "/parcel/:parcelID"), {
-    query: {}, params: { parcelID: "parcel-7" }, body: {},
+    query: {}, params: { parcelID: "aaaaaaaaaaaaaaaaaaaaaaaa" }, body: { email: "merchant@example.test" },
   });
   assert.equal(detail.statusCode, 200);
   assert.deepEqual(detail.body, parcel);
@@ -509,8 +538,12 @@ test("tracking query, hub finance, checkout, and OTP verification execute with m
   assert.equal(JSON.parse(dashboard.body).success, true);
   assert.equal(JSON.parse(dashboard.body).metrics.totalParcels, 0);
 
+  collections.parcelsCollections.findOne = async () => ({
+    deliveryCharge: 50, deliveryChargeStatus: "unpaid", parcelName: "Box",
+    trackingID: "T-5", senderInfo: { email: "merchant@example.test" },
+  });
   const checkout = await invoke(locateRoute(app, "post", "/payment-checkout"), {
-    query: {}, params: {}, body: { deliveryCharge: "50", parcelName: "Box", parcelId: "p1", senderEmail: "a@example.test" },
+    query: {}, params: {}, body: { deliveryCharge: "1", parcelName: "Box", parcelId: "aaaaaaaaaaaaaaaaaaaaaaaa", senderEmail: "a@example.test" },
   });
   assert.equal(checkout.body.url, "https://stripe.invalid/session");
 
@@ -522,7 +555,9 @@ test("tracking query, hub finance, checkout, and OTP verification execute with m
           retrieve: async () => ({
             payment_intent: "transaction-1",
             payment_status: "paid",
-            metadata: { parcelId: "parcel-5", trackingID: "T-5", percelName: "Box" },
+            mode: "payment",
+            currency: "usd",
+            metadata: { parcelId: "aaaaaaaaaaaaaaaaaaaaaaaa", trackingID: "T-5", percelName: "Box" },
             amount_total: 5000,
             customer_email: "merchant@example.test",
           }),
@@ -530,10 +565,12 @@ test("tracking query, hub finance, checkout, and OTP verification execute with m
       },
     },
   });
-  paymentHarness.collections.parcelsCollections.findOneAndUpdate = async () => ({
-    senderInfo: { email: "merchant@example.test" },
+  paymentHarness.collections.parcelsCollections.findOne = async () => ({
+    _id: "aaaaaaaaaaaaaaaaaaaaaaaa", deliveryCharge: 50, deliveryChargeStatus: "unpaid",
+    trackingID: "T-5", parcelName: "Box", senderInfo: { email: "merchant@example.test" },
     serviceCenters: { origin: "South", destination: "North" },
   });
+  paymentHarness.collections.parcelsCollections.updateOne = async () => ({ matchedCount: 1, modifiedCount: 1 });
   const verifiedPayment = await invoke(
     locateRoute(paymentHarness.app, "patch", "/verify-payment"),
     { query: { session_id: "session-1" }, params: {}, body: {} },
@@ -548,7 +585,7 @@ test("tracking query, hub finance, checkout, and OTP verification execute with m
     paidAt: verifiedPayment.body.paidAt,
   });
 
-  let otpDocument = { otp: 123456, expiresAt: Date.now() + 60000 };
+  let otpDocument = { otp: 123456, expiresAt: Date.now() + 60000, lastSentAt: Date.now() - 120000 };
   dependencies.admin.firestore = () => ({
     collection: () => ({
       doc: () => ({
@@ -558,6 +595,10 @@ test("tracking query, hub finance, checkout, and OTP verification execute with m
         },
         delete: async () => { otpDocument = null; },
       }),
+    }),
+    runTransaction: async (callback) => callback({
+      get: async (doc) => doc.get(),
+      set: (doc, data, options) => doc.set(data, options),
     }),
   });
 
@@ -588,6 +629,10 @@ test("password reset is rejected unless OTP verification is still valid", async 
         get: async () => ({ exists: true, data: () => otpDocument }),
       }),
     }),
+    runTransaction: async (callback) => callback({
+      get: async (doc) => doc.get(),
+      set: (doc, data, options) => doc.set(data, options),
+    }),
   });
 
   const response = await invoke(locateRoute(app, "post", "/reset-password"), {
@@ -608,4 +653,24 @@ test("tracking query preserves its database-failure response", async () => {
 
   assert.equal(response.statusCode, 500);
   assert.deepEqual(response.body, { message: "Error loading tracking logs" });
+});
+
+test("in-scope MongoDB failures return safe generic error details", async () => {
+  const { app, collections } = makeHarness();
+  collections.merchantsCollections.insertOne = async () => { throw new Error("database URI must not be returned"); };
+  const merchantResponse = await invoke(locateRoute(app, "post", "/merchants"), {
+    query: {}, params: {}, body: { email: "merchant@example.test" },
+  });
+  assert.equal(merchantResponse.statusCode, 500);
+  assert.deepEqual(merchantResponse.body, { error: "Internal Server Error" });
+
+  collections.parcelsCollections.find = () => { throw new Error("internal query detail"); };
+  const hubResponse = await invoke(locateRoute(app, "get", "/parcels/incoming/:hubName"), {
+    query: {}, params: { hubName: "North" }, body: {},
+  });
+  assert.equal(hubResponse.statusCode, 500);
+  assert.deepEqual(hubResponse.body, {
+    message: "Error fetching incoming parcels",
+    error: "Internal Server Error",
+  });
 });

@@ -2,7 +2,7 @@ const express = require("express");
 
 function createRidersRouter(dependencies) {
   const router = express.Router();
-  const { usersCache, userCache, userRoleCache, managerCache, mainDashboardCache, riderCache, ridersCache, availableRidersCache, returnWarehouseCache, targetedMerchantCache, verifyFireBaseToken, verifyRoles, verifyAdminToken, verifyRiderToken, verifyHubManagerToken, logTracking, invalidateParcelStatusChange, ObjectId, connectDB, withTransaction, admin } = dependencies;
+  const { usersCache, userCache, userRoleCache, managerCache, mainDashboardCache, riderCache, ridersCache, availableRidersCache, returnWarehouseCache, targetedMerchantCache, verifyFireBaseToken, verifyRoles, verifyOwner, verifyAdminToken, verifyRiderToken, verifyHubManagerToken, verifyAssignedHub, logTracking, invalidateParcelStatusChange, ObjectId, connectDB, withTransaction, admin } = dependencies;
 
   const riderProfileCacheKey = (email) => `rider_${encodeURIComponent(email)}`;
   const riderListCacheScope = (area) => area ? `area:${encodeURIComponent(area)}` : "global";
@@ -37,20 +37,73 @@ function createRidersRouter(dependencies) {
     }
   }
 
-  router.get("/rider/:email",  async (req, res) => {
+  const resolveAuthenticatedRider = async (req, res, next) => {
     try {
-      const email = req.params.email;
-      const cacheKey = riderProfileCacheKey(email);
-      const cachedData = riderCache.get(cacheKey);
-      if (cachedData) return res.status(200).send(cachedData);
-
-      const { ridersCollections, parcelsCollections } = await connectDB();
-      const riderData = await ridersCollections.findOne({ email: email });
-      if (!riderData) {
+      const { ridersCollections } = await connectDB();
+      const rider = await ridersCollections.findOne({
+        email: req.decoded_email,
+      });
+      if (!rider) {
         return res
           .status(404)
           .send({ success: false, message: "Rider not found in TradeCen" });
       }
+      req.authenticatedRider = rider;
+      return next();
+    } catch (error) {
+      return res
+        .status(500)
+        .send({ success: false, message: "Internal Server Error" });
+    }
+  };
+  resolveAuthenticatedRider.auditName = "resolveAuthenticatedRider";
+
+  const verifyRoleSpecificRiderListing = async (req, res, next) => {
+    if (req.authorizationRole === "hub-manager") {
+      return verifyAssignedHub(req, res, () => {
+        if (
+          req.query.area !== undefined &&
+          req.query.area !== req.assignedHubName
+        ) {
+          return res.status(403).send({
+            success: false,
+            message: "Forbidden: You cannot access another hub's Riders",
+          });
+        }
+        return next();
+      });
+    }
+    if (req.authorizationRole === "rider") {
+      if (
+        req.query.email !== undefined &&
+        req.query.email !== req.decoded_email
+      ) {
+        return res.status(403).send({
+          success: false,
+          message: "Forbidden: You cannot access another Rider's data",
+        });
+      }
+      return resolveAuthenticatedRider(req, res, next);
+    }
+    return next();
+  };
+  verifyRoleSpecificRiderListing.auditName = "verifyRoleSpecificRiderListing";
+
+  router.get(
+    "/rider/:email",
+    verifyFireBaseToken,
+    verifyRiderToken,
+    verifyOwner,
+    resolveAuthenticatedRider,
+    async (req, res) => {
+    try {
+      const email = req.decoded_email;
+      const cacheKey = riderProfileCacheKey(email);
+      const cachedData = riderCache.get(cacheKey);
+      if (cachedData) return res.status(200).send(cachedData);
+
+      const { parcelsCollections } = await connectDB();
+      const riderData = req.authenticatedRider;
 
       const assignedParcels = riderData.activeTasks || [];
       const holdUpParcels = assignedParcels.filter((p) => p && p.isHold === true);
@@ -165,21 +218,32 @@ function createRidersRouter(dependencies) {
     }
   });
 
-  router.patch("/rider/status/:email", async (req, res) => {
+  router.patch(
+    "/rider/status/:email",
+    verifyFireBaseToken,
+    verifyRiderToken,
+    verifyOwner,
+    resolveAuthenticatedRider,
+    async (req, res) => {
     try {
       const { ridersCollections } = await connectDB();
       const { workStatus } = req.body;
-      const { email } = req.params;
+      const email = req.decoded_email;
+      if (!["available", "offline"].includes(workStatus)) {
+        return res.status(400).send({
+          success: false,
+          message: "Invalid work status",
+        });
+      }
 
-      const rider = await ridersCollections.findOne({ email });
       const result = await ridersCollections.updateOne(
-        { email },
+        { _id: req.authenticatedRider._id, email },
         { $set: { workStatus } },
       );
 
       if (result.modifiedCount > 0 || result.matchedCount > 0) {
         invalidateRiderCaches({
-          rider,
+          rider: req.authenticatedRider,
           email,
           riderDocumentChanged: true,
           availabilityChanged: true,
@@ -197,7 +261,8 @@ function createRidersRouter(dependencies) {
     } catch (error) {
       res.status(500).send({ message: "Internal Server Error" });
     }
-  });
+    },
+  );
 
   router.patch(
     "/riders/hold-parcel/update",
@@ -249,48 +314,113 @@ function createRidersRouter(dependencies) {
     },
   );
 
-  router.post("/riders", async (req, res) => {
+  router.post("/riders", verifyFireBaseToken, async (req, res) => {
     try {
       const { ridersCollections, userCollections } = await connectDB();
-      const newRider = req.body;
-      const isExist = await ridersCollections.findOne({ email: newRider.email });
-      if (isExist)
-        return res.send({ message: "This email already used for rider!" });
+      const email = req.decoded_email;
+      const {
+        name, photoURL, region, district, area, nid, phone, vehicle, license,
+        bikeModel, bikeRegistration, latitude, longitude,
+      } = req.body;
+      const riderProfile = {
+        name, email, photoURL, region, district, area, nid, phone, vehicle,
+        license, bikeModel, bikeRegistration, latitude, longitude,
+        status: "pending",
+        workStatus: "Not Confirmed",
+        createdAt: new Date(),
+        currentLocation: { latitude, longitude },
+        avgDeliveryTime: 0,
+        successRate: 0,
+        rating: 0,
+        totalEarnings: 0,
+        currentTasks: 0,
+        totalAssign: 0,
+        successfullyComplete: 0,
+        bloodGroup: "A+",
+      };
 
-      const result = await ridersCollections.insertOne(newRider);
+      let createdResult;
+      let outcome;
+      await withTransaction(async (session) => {
+        const user = await userCollections.findOne({ email }, { session });
+        if (!user) {
+          outcome = "user-not-found";
+          return;
+        }
+        const existingRider = await ridersCollections.findOne({ email }, { session });
+        if (existingRider) {
+          outcome = "already-exists";
+          return;
+        }
+        if (user.role !== "user") {
+          outcome = "role-not-eligible";
+          return;
+        }
+
+        const claim = await userCollections.updateOne(
+          { email, role: "user" },
+          { $set: { role: "pending-rider" } },
+          { session },
+        );
+        if (claim.matchedCount === 0) {
+          outcome = "role-not-eligible";
+          return;
+        }
+        createdResult = await ridersCollections.insertOne(riderProfile, { session });
+        outcome = "created";
+      });
+
+      if (outcome === "user-not-found") {
+        return res.status(404).send({ success: false, message: "User not found" });
+      }
+      if (outcome === "role-not-eligible") {
+        return res.status(409).send({
+          success: false,
+          message: "This account cannot submit a Rider application",
+        });
+      }
+      if (outcome === "already-exists") {
+        return res.send({ message: "This email already used for rider!" });
+      }
+
       invalidateRiderCaches({
-        rider: newRider,
+        rider: riderProfile,
         riderDocumentChanged: true,
         availabilityChanged: true,
-        activeTaskCountChanged: Number(newRider.currentTasks) > 0,
       });
-      await userCollections.updateOne(
-        { email: newRider.email },
-        { $set: { role: "pending-rider" } },
-      );
-
-      userCache.del(`user_${newRider.email}`);
-      userRoleCache.del(`user_role_${newRider.email}`);
+      userCache.del("user_" + email);
+      userRoleCache.del("user_role_" + email);
       usersCache.bump("global");
-      res.send(result);
+      return res.send(createdResult);
     } catch (error) {
-      res.status(500).send({ error: error.message });
+      return res.status(500).send({ error: "Internal Server Error" });
     }
   });
 
   router.get(
     "/riders",
-    // verifyFireBaseToken,
-    // verifyRoles("admin", "hub-manager", "rider"),
+    verifyFireBaseToken,
+    verifyRoles("admin", "hub-manager", "rider"),
+    verifyRoleSpecificRiderListing,
     async (req, res) => {
       try {
-        const { status, workStatus, email, area } = req.query;
-        const owner = riderListCacheScope(area);
+        const { status, workStatus, email } = req.query;
+        const isAdmin = req.authorizationRole === "admin";
+        const isHubManager = req.authorizationRole === "hub-manager";
+        if (req.authorizationRole === "rider") {
+          return res.status(200).send([req.authenticatedRider]);
+        }
+
+        const area = isHubManager ? req.assignedHubName : req.query.area;
+        const scopedEmail = isAdmin ? email : undefined;
+        const owner = isHubManager
+          ? riderListCacheScope(req.assignedHubName)
+          : "global";
         const cacheFilters = {
           area: area || null,
           status: status || null,
           workStatus: workStatus || null,
-          email: email || null,
+          email: scopedEmail || null,
         };
         const cachedData = ridersCache.get(owner, [
           JSON.stringify(cacheFilters),
@@ -301,7 +431,7 @@ function createRidersRouter(dependencies) {
         let query = {};
         if (status) query.status = status;
         if (workStatus) query.workStatus = workStatus;
-        if (email) query.email = email;
+        if (scopedEmail) query.email = scopedEmail;
         if (area) query.area = area;
 
         const result = await ridersCollections.find(query).toArray();
@@ -322,9 +452,10 @@ function createRidersRouter(dependencies) {
     "/riders/available/:areaName",
     verifyFireBaseToken,
     verifyHubManagerToken,
+    verifyAssignedHub,
     async (req, res) => {
       try {
-        const { areaName } = req.params;
+        const areaName = req.assignedHubName;
         const cacheKey = availableRiderCacheKey(areaName);
         const cachedRiders = availableRidersCache.get(cacheKey);
         if (cachedRiders) return res.status(200).send(cachedRiders);
@@ -335,7 +466,10 @@ function createRidersRouter(dependencies) {
           workStatus: "available",
           currentTasks: { $lt: 10 },
         };
-        const riders = await ridersCollections.find(query).toArray();
+        const riders = await ridersCollections
+          .find(query)
+          .project({ _id: 1, name: 1, phone: 1, currentTasks: 1 })
+          .toArray();
         availableRidersCache.set(cacheKey, riders);
         res.status(200).send(riders);
       } catch (error) {
@@ -354,228 +488,286 @@ function createRidersRouter(dependencies) {
       try {
         const { ridersCollections, userCollections } = await connectDB();
         const id = req.params.id;
-        const { status, workStatus, email } = req.body;
-        const existingRider = await ridersCollections.findOne({
-          _id: new ObjectId(id),
+        if (!/^[a-f\d]{24}$/i.test(id || "")) {
+          return res.status(400).send({ success: false, message: "Invalid Rider ID" });
+        }
+        const { status, workStatus } = req.body;
+        let existingRider;
+        let riderResult;
+        let userResult;
+        let outcome;
+        await withTransaction(async (session) => {
+          existingRider = await ridersCollections.findOne(
+            { _id: new ObjectId(id) },
+            { session },
+          );
+          if (!existingRider) {
+            outcome = "rider-not-found";
+            return;
+          }
+          riderResult = await ridersCollections.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status, workStatus, updatedAt: new Date() } },
+            { session },
+          );
+          if (riderResult.modifiedCount === 0) {
+            outcome = "rider-not-updated";
+            return;
+          }
+          userResult = await userCollections.updateOne(
+            { email: existingRider.email },
+            { $set: { role: "rider" } },
+            { session },
+          );
+          if (userResult.matchedCount === 0) {
+            const error = new Error("Rider account record not found");
+            error.code = "RIDER_ACCOUNT_NOT_FOUND";
+            throw error;
+          }
+          outcome = "approved";
         });
 
-        const riderResult = await ridersCollections.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { status, workStatus, updatedAt: new Date() } },
-        );
-
-        if (riderResult.modifiedCount > 0) {
-          invalidateRiderCaches({
-            rider: existingRider,
-            email,
-            riderDocumentChanged: true,
-            availabilityChanged: true,
+        if (outcome !== "approved") {
+          return res.status(404).send({
+            message:
+              outcome === "rider-not-found"
+                ? "Rider not found"
+                : "Rider not found or no changes made",
           });
-          const userResult = await userCollections.updateOne(
-            { email },
-            { $set: { role: "rider" } },
-          );
-          userCache.del(`user_${email}`);
-          userRoleCache.del(`user_role_${email}`);
-          usersCache.bump("global");
-
-          res.send({
-            success: true,
-            message: "Rider approved and user role updated to rider",
-            riderResult,
-            userResult,
-          });
-        } else {
-          res.status(404).send({ message: "Rider not found or no changes made" });
         }
+        invalidateRiderCaches({
+          rider: existingRider,
+          email: existingRider.email,
+          riderDocumentChanged: true,
+          availabilityChanged: true,
+        });
+        userCache.del("user_" + existingRider.email);
+        userRoleCache.del("user_role_" + existingRider.email);
+        usersCache.bump("global");
+        return res.send({
+          success: true,
+          message: "Rider approved and user role updated to rider",
+          riderResult,
+          userResult,
+        });
       } catch (error) {
+        if (error.code === "RIDER_ACCOUNT_NOT_FOUND") {
+          return res.status(404).send({
+            success: false,
+            message: "User account for this Rider was not found",
+          });
+        }
         console.error("Error approving rider:", error);
         res.status(500).send({ message: "Internal Server Error" });
       }
     },
   );
 
+  const createParcelAssignmentHandler = ({
+    hubField,
+    allowedStatuses,
+    riderField,
+    taskType,
+  }) => async (req, res) => {
+    const { parcelId, riderId } = req.body || {};
+    if (!/^[a-f\d]{24}$/i.test(String(parcelId || "")) || !/^[a-f\d]{24}$/i.test(String(riderId || ""))) {
+      return res.status(400).send({ success: false, message: "Invalid parcel or Rider ID" });
+    }
+
+    try {
+      const { parcelsCollections, ridersCollections } = await connectDB();
+      const parcelObjectId = new ObjectId(parcelId);
+      const riderObjectId = new ObjectId(riderId);
+      const [parcel, rider] = await Promise.all([
+        parcelsCollections.findOne({ _id: parcelObjectId }),
+        ridersCollections.findOne({ _id: riderObjectId }),
+      ]);
+      if (!parcel) {
+        return res.status(404).send({ success: false, message: "Parcel not found" });
+      }
+      if (parcel.serviceCenters?.[hubField] !== req.assignedHubName) {
+        return res.status(403).send({
+          success: false,
+          message: "Forbidden: Parcel does not belong to your assigned hub",
+        });
+      }
+      if (!allowedStatuses.includes(parcel.deliveryStatus)) {
+        return res.status(409).send({
+          success: false,
+          message: "Parcel is not in an assignable state",
+        });
+      }
+      if (!rider) {
+        return res.status(404).send({ success: false, message: "Rider not found" });
+      }
+      if (rider.area !== req.assignedHubName) {
+        return res.status(403).send({
+          success: false,
+          message: "Forbidden: Rider does not belong to your assigned hub",
+        });
+      }
+      if (rider.workStatus !== "available" || Number(rider.currentTasks) >= 10) {
+        return res.status(409).send({
+          success: false,
+          message: "Rider is not available for assignment",
+        });
+      }
+
+      const assignedAt = new Date();
+      const parcelAssignment = {
+        id: String(rider._id),
+        name: rider.name,
+        email: rider.email,
+        phone: rider.phone,
+        assignedAt,
+      };
+      const activeTask = taskType === "pickup"
+        ? {
+            parcelId: parcelObjectId,
+            trackingID: parcel.trackingID,
+            parcelName: parcel.parcelName,
+            codAmount: parcel.codAmount,
+            pickupLocation: parcel.senderInfo?.address,
+            merchantName: parcel.senderInfo?.name,
+            merchantPhone: parcel.senderInfo?.phone,
+            taskType,
+            assignedAt,
+          }
+        : {
+            parcelId: parcelObjectId,
+            trackingID: parcel.trackingID,
+            parcelName: parcel.parcelName,
+            codAmount: parcel.codAmount,
+            deliveryLocation: parcel.receiverInfo?.address,
+            consumerName: parcel.receiverInfo?.name,
+            consumerPhone: parcel.receiverInfo?.phone,
+            taskType,
+            assignedAt,
+            isHold: false,
+          };
+      const parcelStatusFilter = allowedStatuses.length === 1
+        ? allowedStatuses[0]
+        : { $in: allowedStatuses };
+
+      try {
+        const result = await withTransaction(async (session) => {
+          const parcelUpdate = await parcelsCollections.updateOne(
+            {
+              _id: parcelObjectId,
+              ["serviceCenters." + hubField]: req.assignedHubName,
+              deliveryStatus: parcelStatusFilter,
+            },
+            {
+              $set: {
+                deliveryStatus: taskType === "pickup"
+                  ? "assign-pickup-rider"
+                  : "assign-delivery-rider",
+                [riderField]: parcelAssignment,
+                updatedAt: assignedAt,
+              },
+            },
+            { session },
+          );
+          if (parcelUpdate.matchedCount === 0) return "parcel-conflict";
+
+          const riderUpdate = await ridersCollections.updateOne(
+            {
+              _id: rider._id,
+              email: rider.email,
+              area: req.assignedHubName,
+              workStatus: "available",
+              currentTasks: { $lt: 10 },
+            },
+            {
+              $inc: { currentTasks: 1, totalAssign: 1 },
+              $push: { activeTasks: activeTask },
+            },
+            { session },
+          );
+          if (riderUpdate.matchedCount === 0) {
+            const error = new Error("Rider is no longer eligible for assignment");
+            error.code = "RIDER_ASSIGNMENT_CONFLICT";
+            throw error;
+          }
+          return "assigned";
+        });
+
+        if (result !== "assigned") {
+          return res.status(409).send({
+            success: false,
+            message: "Parcel is no longer available for assignment",
+          });
+        }
+      } catch (error) {
+        if (error.code === "RIDER_ASSIGNMENT_CONFLICT") {
+          return res.status(409).send({
+            success: false,
+            message: "Rider is no longer available for assignment",
+          });
+        }
+        throw error;
+      }
+
+      await logTracking(
+        parcel,
+        taskType === "pickup" ? "assign-pickup-rider" : "assign-delivery-rider",
+      );
+      invalidateParcelStatusChange({
+        trackingID: parcel.trackingID,
+        senderEmail: parcel.senderInfo?.email,
+        originHub: parcel.serviceCenters?.origin,
+        destinationHub: parcel.serviceCenters?.destination,
+        parcelId,
+      });
+      invalidateRiderCaches({
+        rider,
+        email: rider.email,
+        riderDocumentChanged: true,
+        availabilityChanged: true,
+        activeTaskCountChanged: true,
+      });
+      if (taskType === "delivery") managerCache.bump("global");
+
+      return res.status(200).send({
+        success: true,
+        message: "Rider assigned successfully",
+      });
+    } catch (error) {
+      return res.status(500).send({
+        message: "Server error",
+        error: "Internal Server Error",
+      });
+    }
+  };
+
   router.patch(
     "/parcels/assign-rider",
     verifyFireBaseToken,
     verifyHubManagerToken,
-    async (req, res) => {
-      try {
-        const {
-          parcelId,
-          riderId,
-          riderName,
-          riderEmail,
-          riderPhone,
-          trackingID,
-        } = req.body;
-        const { parcelsCollections, ridersCollections } = await connectDB();
-        const rider = await ridersCollections.findOne({
-          _id: new ObjectId(riderId),
-        });
-        const parcelData = await parcelsCollections.findOne({
-          _id: new ObjectId(parcelId),
-        });
-        await logTracking(parcelData, "assign-pickup-rider");
-
-        const parcelUpdate = await parcelsCollections.updateOne(
-          { _id: new ObjectId(parcelId) },
-          {
-            $set: {
-              deliveryStatus: "assign-pickup-rider",
-              pickupRider: {
-                id: riderId,
-                name: riderName,
-                email: riderEmail,
-                phone: riderPhone,
-                assignedAt: new Date(),
-              },
-            },
-          },
-        );
-        if (parcelUpdate.modifiedCount > 0) {
-          invalidateParcelStatusChange({
-            trackingID: parcelData.trackingID,
-            senderEmail: parcelData.senderInfo?.email,
-            originHub: parcelData.serviceCenters?.origin,
-            destinationHub: parcelData.serviceCenters?.destination,
-            parcelId,
-          });
-          invalidateRiderCaches({ email: riderEmail });
-        }
-
-        const riderUpdate = await ridersCollections.updateOne(
-          { _id: new ObjectId(riderId) },
-          {
-            $inc: { currentTasks: 1, totalAssign: 1 },
-            $push: {
-              activeTasks: {
-                parcelId: new ObjectId(parcelId),
-                trackingID,
-                parcelName: parcelData.parcelName,
-                codAmount: parcelData.codAmount,
-                pickupLocation: parcelData.senderInfo.address,
-                merchantName: parcelData.senderInfo.name,
-                merchantPhone: parcelData.senderInfo.phone,
-                taskType: "pickup",
-                assignedAt: new Date(),
-              },
-            },
-          },
-        );
-        invalidateRiderCaches({
-          rider,
-          email: riderEmail,
-          riderDocumentChanged: true,
-          availabilityChanged: true,
-          activeTaskCountChanged: true,
-        });
-
-        if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
-          res
-            .status(200)
-            .send({ success: true, message: "Rider assigned successfully" });
-        } else {
-          res.status(400).send({ message: "Assignment failed" });
-        }
-      } catch (error) {
-        res.status(500).send({ message: "Server error", error: error.message });
-      }
-    },
+    verifyAssignedHub,
+    createParcelAssignmentHandler({
+      hubField: "origin",
+      allowedStatuses: ["parcel-created"],
+      riderField: "pickupRider",
+      taskType: "pickup",
+    }),
   );
 
   router.patch(
     "/parcels/assign-delivery",
     verifyFireBaseToken,
     verifyHubManagerToken,
-    async (req, res) => {
-      try {
-        const {
-          parcelId,
-          riderId,
-          riderName,
-          riderEmail,
-          riderPhone,
-          trackingID,
-        } = req.body;
-        const { parcelsCollections, ridersCollections } = await connectDB();
-        const rider = await ridersCollections.findOne({
-          _id: new ObjectId(riderId),
-        });
-        const parcelData = await parcelsCollections.findOne({
-          _id: new ObjectId(parcelId),
-        });
-
-        const parcelUpdate = await parcelsCollections.updateOne(
-          { _id: new ObjectId(parcelId) },
-          {
-            $set: {
-              deliveryStatus: "assign-delivery-rider",
-              deliveryRider: {
-                id: riderId,
-                name: riderName,
-                email: riderEmail,
-                phone: riderPhone,
-                assignedAt: new Date(),
-              },
-            },
-          },
-        );
-        if (parcelUpdate.modifiedCount > 0) {
-          invalidateParcelStatusChange({
-            trackingID: parcelData.trackingID,
-            senderEmail: parcelData.senderInfo?.email,
-            originHub: parcelData.serviceCenters?.origin,
-            destinationHub: parcelData.serviceCenters?.destination,
-            parcelId,
-          });
-          invalidateRiderCaches({ email: riderEmail });
-        }
-        await logTracking(parcelData, "assign-delivery-rider");
-
-        const riderUpdate = await ridersCollections.updateOne(
-          { _id: new ObjectId(riderId) },
-          {
-            $inc: { currentTasks: 1, totalAssign: 1 },
-            $push: {
-              activeTasks: {
-                parcelId: new ObjectId(parcelId),
-                trackingID,
-                parcelName: parcelData.parcelName,
-                codAmount: parcelData.codAmount,
-                deliveryLocation: parcelData.receiverInfo.address,
-                consumerName: parcelData.receiverInfo.name,
-                consumerPhone: parcelData.receiverInfo.phone,
-                taskType: "delivery",
-                assignedAt: new Date(),
-                isHold: false,
-              },
-            },
-          },
-        );
-        invalidateRiderCaches({
-          rider,
-          email: riderEmail,
-          riderDocumentChanged: true,
-          availabilityChanged: true,
-          activeTaskCountChanged: true,
-        });
-
-        if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
-          managerCache.bump("global");
-
-          res
-            .status(200)
-            .send({ success: true, message: "Rider assigned successfully" });
-        } else {
-          res.status(400).send({ message: "Assignment failed" });
-        }
-      } catch (error) {
-        res.status(500).send({ message: "Server error", error: error.message });
-      }
-    },
+    verifyAssignedHub,
+    createParcelAssignmentHandler({
+      hubField: "destination",
+      allowedStatuses: [
+        "reached-destination-warehouse",
+        "reached-origin-warehouse",
+      ],
+      riderField: "deliveryRider",
+      taskType: "delivery",
+    }),
   );
-
   router.patch("/parcels/assign-return-delivery", async (req, res) => {
     try {
       const { parcelId, riderId, riderName, riderEmail, riderPhone, trackingID } =
@@ -1023,9 +1215,14 @@ function createRidersRouter(dependencies) {
     }
   });
 
-  router.get("/warehouse/return-house/:hubName", async (req, res) => {
+  router.get(
+    "/warehouse/return-house/:hubName",
+    verifyFireBaseToken,
+    verifyHubManagerToken,
+    verifyAssignedHub,
+    async (req, res) => {
     try {
-      const { hubName } = req.params;
+      const hubName = req.assignedHubName;
       const cacheKey = `return_warehouse_${hubName.toLowerCase()}`;
       const cachedParcels = returnWarehouseCache.get(cacheKey);
       if (cachedParcels)
@@ -1044,7 +1241,8 @@ function createRidersRouter(dependencies) {
     } catch (error) {
       res.status(500).send({ success: false, message: "Internal server error" });
     }
-  });
+    },
+  );
 
   router.patch(
     "/riders/complete-delivered/update",
@@ -1118,7 +1316,11 @@ function createRidersRouter(dependencies) {
     },
   );
 
-  router.delete("/riders/:id", async (req, res) => {
+  router.delete(
+    "/riders/:id",
+    verifyFireBaseToken,
+    verifyAdminToken,
+    async (req, res) => {
     try {
       const { ridersCollections, userCollections } = await connectDB();
       const id = req.params.id;
@@ -1172,7 +1374,8 @@ function createRidersRouter(dependencies) {
       console.error("Error rejecting rider:", error);
       res.status(500).send({ success: false, message: "Internal Server Error" });
     }
-  });
+    },
+  );
 
   return router;
 }

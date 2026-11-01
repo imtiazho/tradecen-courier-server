@@ -107,6 +107,7 @@ function createRouteDependencies({ admin, connectDB, withTransaction }) {
               "Forbidden Access: You do not have permission for this resource",
           });
         }
+        req.authorizationRole = user.role;
         next();
       } catch (error) {
         res
@@ -173,6 +174,72 @@ function createRouteDependencies({ admin, connectDB, withTransaction }) {
     next();
   };
 
+  const verifyAssignedHub = async (req, res, next) => {
+    try {
+      const { hubManagersCollection } = await connectDB();
+      const manager = await hubManagersCollection.findOne({
+        email: req.decoded_email,
+      });
+      const assignedHubName = manager?.hubName;
+      if (typeof assignedHubName !== "string" || !assignedHubName.trim()) {
+        return res.status(403).send({
+          success: false,
+          message: "Hub Manager assignment not found",
+        });
+      }
+
+      req.hubManagerRecord = manager;
+      req.assignedHubName = assignedHubName;
+
+      const requestedHubName = req.params.hubName ?? req.params.areaName;
+      if (requestedHubName !== undefined && requestedHubName !== assignedHubName) {
+        return res.status(403).send({
+          success: false,
+          message: "Forbidden: You cannot access another hub's data",
+        });
+      }
+
+      next();
+    } catch (error) {
+      res.status(500).send({ success: false, message: "Internal Server Error" });
+    }
+  };
+
+  const verifyParcelHub = (hubField) => async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!/^[a-f\d]{24}$/i.test(id || "")) {
+        return res.status(400).send({
+          success: false,
+          message: "Invalid parcel ID",
+        });
+      }
+
+      const { parcelsCollections } = await connectDB();
+      const parcel = await parcelsCollections.findOne({
+        _id: new ObjectId(id),
+      });
+      if (!parcel) {
+        return res.status(404).send({
+          success: false,
+          message: "Parcel not found",
+        });
+      }
+      if (parcel.serviceCenters?.[hubField] !== req.assignedHubName) {
+        return res.status(403).send({
+          success: false,
+          message: "Forbidden: Parcel does not belong to your assigned hub",
+        });
+      }
+
+      req.authorizedParcel = parcel;
+      req.authorizedParcelHubField = hubField;
+      next();
+    } catch (error) {
+      res.status(500).send({ success: false, message: "Internal Server Error" });
+    }
+  };
+
   const stripe = stripeFactory(process.env.STRIPE_SECRET);
 
   const logTracking = async (parcel, status) => {
@@ -232,7 +299,7 @@ function createRouteDependencies({ admin, connectDB, withTransaction }) {
     auth: { user: process.env.EMAIL, pass: process.env.EMAIL_PASS },
   });
 
-    return { trackingCache, usersCache, userCache, userRoleCache, managerCache, incomingParcelsCache, merchantParcelsCache, pickupCache, sortingCache, outForDeliveryCache, hubDeliveredCache, riderCache, ridersCache, availableRidersCache, returnWarehouseCache, allMerchantsCache, merchantsAreaWiseCache, targetedMerchantCache, payoutSummaryCache, allPayoutsCache, parcelDetailCache, lateInvoicesCache, merchantUnpaidCache, parcelsStatusWiseCache, parcelStatsCache, revenueStatsCache, hubHandCashCache, hubProfitCache, hubAgingCache, hubEfficiencyCache, depositHistoryCache, mainDashboardCache, verifyFireBaseToken, verifyRoles, verifyOwner, verifyAdminToken, verifyMerchantToken, verifyRiderToken, verifyHubManagerToken, stripe, logTracking, invalidateParcelStatusChange, pendingRequests, pendingHubRequests, pendingHubProfitRequests, pendingHubAgingRequests, pendingHubEfficiencyRequests, pendingDepositHistoryRequests, pendingDashboardRequests, ObjectId, connectDB, withTransaction, admin, transporter };
+    return { trackingCache, usersCache, userCache, userRoleCache, managerCache, incomingParcelsCache, merchantParcelsCache, pickupCache, sortingCache, outForDeliveryCache, hubDeliveredCache, riderCache, ridersCache, availableRidersCache, returnWarehouseCache, allMerchantsCache, merchantsAreaWiseCache, targetedMerchantCache, payoutSummaryCache, allPayoutsCache, parcelDetailCache, lateInvoicesCache, merchantUnpaidCache, parcelsStatusWiseCache, parcelStatsCache, revenueStatsCache, hubHandCashCache, hubProfitCache, hubAgingCache, hubEfficiencyCache, depositHistoryCache, mainDashboardCache, verifyFireBaseToken, verifyRoles, verifyOwner, verifyAdminToken, verifyMerchantToken, verifyRiderToken, verifyHubManagerToken, verifyAssignedHub, verifyParcelHub, stripe, logTracking, invalidateParcelStatusChange, pendingRequests, pendingHubRequests, pendingHubProfitRequests, pendingHubAgingRequests, pendingHubEfficiencyRequests, pendingDepositHistoryRequests, pendingDashboardRequests, ObjectId, connectDB, withTransaction, admin, transporter };
 }
 
 module.exports = createRouteDependencies;

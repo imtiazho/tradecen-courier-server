@@ -2,9 +2,16 @@ const express = require("express");
 
 function createUsersRouter(dependencies) {
   const router = express.Router();
-  const { usersCache, userCache, userRoleCache, managerCache, verifyFireBaseToken, verifyOwner, verifyAdminToken, connectDB } = dependencies;
+  const { usersCache, userCache, userRoleCache, managerCache, verifyFireBaseToken, verifyRoles, verifyOwner, verifyAdminToken, connectDB } = dependencies;
+  const verifyHubManagerDirectoryOwner = (req, res, next) => {
+    if (req.authorizationRole === "hub-manager") {
+      return verifyOwner(req, res, next);
+    }
+    next();
+  };
+  verifyHubManagerDirectoryOwner.auditName = "verifyHubManagerDirectoryOwner";
 
-  router.get("/users", async (req, res) => {
+  router.get("/users", verifyFireBaseToken, verifyAdminToken, async (req, res) => {
     try {
       const searchText = req.query.searchText || "";
       const role = req.query.role || "";
@@ -40,7 +47,7 @@ function createUsersRouter(dependencies) {
     }
   });
 
-  router.get("/user/:email", async (req, res) => {
+  router.get("/user/:email", verifyFireBaseToken, verifyOwner, async (req, res) => {
     try {
       const email = req.params.email;
       const cacheKey = `user_${email}`;
@@ -94,19 +101,23 @@ function createUsersRouter(dependencies) {
         userRoleCache.set(cacheKey, user.role);
         res.send({ role: user.role });
       } catch (error) {
-        console.error("API Error Stack:", error);
+        console.error("Failed to load user role");
         res.status(500).send({ success: false, error: "Internal Server Error" });
       }
     },
   );
 
-  router.patch("/users/update/:email", async (req, res) => {
+  router.patch("/users/update/:email", verifyFireBaseToken, verifyOwner, async (req, res) => {
     try {
       const { userCollections } = await connectDB();
       const email = req.params.email;
+      const profileUpdates = { ...req.body };
+      delete profileUpdates.role;
+      delete profileUpdates.isOnboarded;
+      delete profileUpdates.email;
       const result = await userCollections.updateOne(
         { email },
-        { $set: { ...req.body } },
+        { $set: profileUpdates },
       );
 
       userCache.del(`user_${email}`);
@@ -119,10 +130,13 @@ function createUsersRouter(dependencies) {
     }
   });
 
-  router.post("/users", async (req, res) => {
+  router.post("/users", verifyFireBaseToken, verifyOwner, async (req, res) => {
     try {
       const { userCollections } = await connectDB();
-      const user = req.body;
+      const profile = { ...req.body };
+      delete profile.role;
+      delete profile.isOnboarded;
+      const user = { ...profile, email: req.decoded_email, role: "user" };
       const isExist = await userCollections.findOne({ email: user.email });
       if (isExist) return res.send({ message: "User already exists" });
 
@@ -134,7 +148,7 @@ function createUsersRouter(dependencies) {
     }
   });
 
-  router.patch("/users/verify-status/:email", async (req, res) => {
+  router.patch("/users/verify-status/:email", verifyFireBaseToken, verifyOwner, async (req, res) => {
     try {
       const { userCollections } = await connectDB();
       const email = req.params.email;
@@ -149,7 +163,7 @@ function createUsersRouter(dependencies) {
 
       res.send(result);
     } catch (error) {
-      res.status(500).send({ error: error.message });
+      res.status(500).send({ error: "Internal Server Error" });
     }
   });
 
@@ -203,7 +217,7 @@ function createUsersRouter(dependencies) {
           });
         }
       } catch (error) {
-        console.error("Error adding hub manager:", error);
+        console.error("Failed to add hub manager");
         res
           .status(500)
           .send({ success: false, message: "Internal Server Error" });
@@ -211,9 +225,28 @@ function createUsersRouter(dependencies) {
     },
   );
 
-  router.get("/users/hub-managers", async (req, res) => {
+  router.get(
+    "/users/hub-managers",
+    verifyFireBaseToken,
+    verifyRoles("admin", "hub-manager"),
+    verifyHubManagerDirectoryOwner,
+    async (req, res) => {
     try {
       const { region, district, email } = req.query;
+      if (req.authorizationRole === "hub-manager") {
+        const { hubManagersCollection } = await connectDB();
+        const manager = await hubManagersCollection.findOne({
+          email: req.decoded_email,
+        });
+        if (!manager || typeof manager.hubName !== "string" || !manager.hubName.trim()) {
+          return res.status(403).send({
+            success: false,
+            message: "Hub Manager assignment not found",
+          });
+        }
+        return res.status(200).send(email ? manager : [manager]);
+      }
+
       const cachedData = managerCache.get("global", [
         email || "all",
         region || "all",
@@ -237,10 +270,11 @@ function createUsersRouter(dependencies) {
       );
       res.status(200).send(finalData);
     } catch (error) {
-      console.error("Error fetching managers:", error);
+      console.error("Failed to fetch hub managers");
       res.status(500).send({ message: "Internal Server Error" });
     }
-  });
+    },
+  );
 
   return router;
 }

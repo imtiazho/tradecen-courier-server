@@ -2,7 +2,7 @@ const express = require("express");
 
 function createMerchantsRouter(dependencies) {
   const router = express.Router();
-  const { usersCache, userCache, userRoleCache, allMerchantsCache, merchantsAreaWiseCache, targetedMerchantCache, verifyFireBaseToken, verifyOwner, verifyAdminToken, verifyMerchantToken, verifyHubManagerToken, connectDB } = dependencies;
+  const { usersCache, userCache, userRoleCache, allMerchantsCache, merchantsAreaWiseCache, targetedMerchantCache, verifyFireBaseToken, verifyOwner, verifyAdminToken, verifyMerchantToken, verifyHubManagerToken, verifyAssignedHub, connectDB } = dependencies;
 
   router.get(
     "/all-merchants",
@@ -28,6 +28,7 @@ function createMerchantsRouter(dependencies) {
     "/area-merchant/:hubName",
     verifyFireBaseToken,
     verifyHubManagerToken,
+    verifyAssignedHub,
     async (req, res) => {
       try {
         const { hubName } = req.params;
@@ -47,10 +48,12 @@ function createMerchantsRouter(dependencies) {
     },
   );
 
-  router.post("/merchants", async (req, res) => {
+  router.post("/merchants", verifyFireBaseToken, verifyOwner, async (req, res) => {
     try {
       const { merchantsCollections, userCollections } = await connectDB();
-      const newMerchant = req.body;
+      const merchantProfile = { ...req.body };
+      delete merchantProfile.role;
+      const newMerchant = { ...merchantProfile, email: req.decoded_email, role: "merchant" };
       const isExist = await merchantsCollections.findOne({
         email: newMerchant.email,
       });
@@ -72,7 +75,7 @@ function createMerchantsRouter(dependencies) {
 
       res.send(result);
     } catch (error) {
-      res.status(500).send({ error: error.message });
+      res.status(500).send({ error: "Internal Server Error" });
     }
   });
 
@@ -119,7 +122,9 @@ function createMerchantsRouter(dependencies) {
       try {
         const { merchantsCollections } = await connectDB();
         const email = req.params.email;
-        const updatedMerchantInfo = req.body;
+        const updatedMerchantInfo = { ...req.body };
+        delete updatedMerchantInfo.role;
+        delete updatedMerchantInfo.email;
         const result = await merchantsCollections.updateOne(
           { email },
           { $set: updatedMerchantInfo },

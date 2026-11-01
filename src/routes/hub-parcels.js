@@ -4,14 +4,21 @@ const createParcelController = require("../controllers/parcelController");
 function createHubParcelsRouter(dependencies) {
   const router = express.Router();
   const controller = createParcelController(dependencies);
-  const { verifyFireBaseToken, verifyHubManagerToken } = dependencies;
+  const { verifyFireBaseToken, verifyHubManagerToken, verifyAssignedHub, verifyParcelHub } = dependencies;
 
-  router.get("/parcels/incoming/:hubName", controller.getIncomingParcels);
+  router.get(
+    "/parcels/incoming/:hubName",
+    verifyFireBaseToken,
+    verifyHubManagerToken,
+    verifyAssignedHub,
+    controller.getIncomingParcels,
+  );
 
   router.get(
     "/parcels/pickups/:hubName",
     verifyFireBaseToken,
     verifyHubManagerToken,
+    verifyAssignedHub,
     controller.getPickupParcels,
   );
 
@@ -19,6 +26,7 @@ function createHubParcelsRouter(dependencies) {
     "/warehouse/sorting-house/:hubName",
     verifyFireBaseToken,
     verifyHubManagerToken,
+    verifyAssignedHub,
     controller.getSortingHouseParcels,
   );
 
@@ -26,6 +34,7 @@ function createHubParcelsRouter(dependencies) {
     "/parcels/out-for-delivery/:hubName",
     verifyFireBaseToken,
     verifyHubManagerToken,
+    verifyAssignedHub,
     controller.getOutForDeliveryParcels,
   );
 
@@ -33,6 +42,7 @@ function createHubParcelsRouter(dependencies) {
     "/parcels/hub-delivered/:hubName",
     verifyFireBaseToken,
     verifyHubManagerToken,
+    verifyAssignedHub,
     controller.getHubDeliveredParcels,
   );
 
@@ -40,6 +50,8 @@ function createHubParcelsRouter(dependencies) {
     "/parcels/dispatch/:id",
     verifyFireBaseToken,
     verifyHubManagerToken,
+    verifyAssignedHub,
+    verifyParcelHub("origin"),
     controller.dispatchParcel,
   );
 
@@ -47,6 +59,8 @@ function createHubParcelsRouter(dependencies) {
     "/parcels/dest-hub/received/:id",
     verifyFireBaseToken,
     verifyHubManagerToken,
+    verifyAssignedHub,
+    verifyParcelHub("destination"),
     controller.receiveParcelAtDestinationHub,
   );
 
@@ -54,6 +68,8 @@ function createHubParcelsRouter(dependencies) {
     "/parcels/origin-hub/received/:id",
     verifyFireBaseToken,
     verifyHubManagerToken,
+    verifyAssignedHub,
+    verifyParcelHub("origin"),
     controller.receiveParcelAtOriginHub,
   );
 

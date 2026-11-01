@@ -58,7 +58,7 @@ function createParcelController(dependencies) {
       } catch (error) {
         res.status(500).send({
           message: "Error fetching incoming parcels",
-          error: error.message,
+          error: "Internal Server Error",
         });
       }
     },
@@ -80,7 +80,7 @@ function createParcelController(dependencies) {
       } catch (error) {
         res.status(500).send({
           message: "Error fetching incoming parcels",
-          error: error.message,
+          error: "Internal Server Error",
         });
       }
     },
@@ -171,7 +171,10 @@ function createParcelController(dependencies) {
         const { id } = req.params;
         const { parcelsCollections } = await connectDB();
         const result = await parcelsCollections.updateOne(
-          { _id: new ObjectId(id) },
+          {
+            _id: new ObjectId(id),
+            [`serviceCenters.${req.authorizedParcelHubField}`]: req.assignedHubName,
+          },
           {
             $set: {
               deliveryStatus: "in-transit",
@@ -180,29 +183,31 @@ function createParcelController(dependencies) {
             },
           },
         );
+        if (result.modifiedCount === 0) {
+          return res.status(404).send({ success: false, message: "Parcel not found" });
+        }
         const parcel = await parcelsCollections.findOne({
           _id: new ObjectId(id),
         });
+        if (!parcel) {
+          return res.status(404).send({ success: false, message: "Parcel not found" });
+        }
         await logTracking(parcel, "in-transit");
 
-        if (result.modifiedCount > 0) {
-          invalidateParcelStatusChange({
-            trackingID: parcel.trackingID,
-            senderEmail: parcel.senderInfo?.email,
-            originHub: parcel.serviceCenters?.origin,
-            destinationHub: parcel.serviceCenters?.destination,
-            parcelId: id,
-          });
-          managerCache.bump("global");
-          res.send({
-            success: true,
-            message: "Parcel status updated to in-transit",
-          });
-        } else {
-          res.status(404).send({ success: false, message: "Parcel not found" });
-        }
+        invalidateParcelStatusChange({
+          trackingID: parcel.trackingID,
+          senderEmail: parcel.senderInfo?.email,
+          originHub: parcel.serviceCenters?.origin,
+          destinationHub: parcel.serviceCenters?.destination,
+          parcelId: id,
+        });
+        managerCache.bump("global");
+        res.send({
+          success: true,
+          message: "Parcel status updated to in-transit",
+        });
       } catch (error) {
-        res.status(500).send({ message: "Server Error", error: error.message });
+        res.status(500).send({ message: "Server Error", error: "Internal Server Error" });
       }
     },
     receiveParcelAtDestinationHub: async (req, res) => {
@@ -210,7 +215,10 @@ function createParcelController(dependencies) {
         const { id } = req.params;
         const { parcelsCollections } = await connectDB();
         const result = await parcelsCollections.updateOne(
-          { _id: new ObjectId(id) },
+          {
+            _id: new ObjectId(id),
+            [`serviceCenters.${req.authorizedParcelHubField}`]: req.assignedHubName,
+          },
           {
             $set: {
               deliveryStatus: "reached-destination-warehouse",
@@ -219,29 +227,31 @@ function createParcelController(dependencies) {
             },
           },
         );
+        if (result.modifiedCount === 0) {
+          return res.status(404).send({ success: false, message: "Parcel not found" });
+        }
         const parcel = await parcelsCollections.findOne({
           _id: new ObjectId(id),
         });
+        if (!parcel) {
+          return res.status(404).send({ success: false, message: "Parcel not found" });
+        }
         await logTracking(parcel, "reached-destination-warehouse");
 
-        if (result.modifiedCount > 0) {
-          invalidateParcelStatusChange({
-            trackingID: parcel.trackingID,
-            senderEmail: parcel.senderInfo?.email,
-            originHub: parcel.serviceCenters?.origin,
-            destinationHub: parcel.serviceCenters?.destination,
-            parcelId: id,
-          });
-          managerCache.bump("global");
-          res.send({
-            success: true,
-            message: "Parcel status updated to in-transit",
-          });
-        } else {
-          res.status(404).send({ success: false, message: "Parcel not found" });
-        }
+        invalidateParcelStatusChange({
+          trackingID: parcel.trackingID,
+          senderEmail: parcel.senderInfo?.email,
+          originHub: parcel.serviceCenters?.origin,
+          destinationHub: parcel.serviceCenters?.destination,
+          parcelId: id,
+        });
+        managerCache.bump("global");
+        res.send({
+          success: true,
+          message: "Parcel status updated to in-transit",
+        });
       } catch (error) {
-        res.status(500).send({ message: "Server Error", error: error.message });
+        res.status(500).send({ message: "Server Error", error: "Internal Server Error" });
       }
     },
     receiveParcelAtOriginHub: async (req, res) => {
@@ -249,7 +259,10 @@ function createParcelController(dependencies) {
         const { id } = req.params;
         const { parcelsCollections } = await connectDB();
         const result = await parcelsCollections.updateOne(
-          { _id: new ObjectId(id) },
+          {
+            _id: new ObjectId(id),
+            [`serviceCenters.${req.authorizedParcelHubField}`]: req.assignedHubName,
+          },
           {
             $set: {
               deliveryStatus: "reached-origin-warehouse",
@@ -258,29 +271,31 @@ function createParcelController(dependencies) {
             },
           },
         );
+        if (result.modifiedCount === 0) {
+          return res.status(404).send({ success: false, message: "Parcel not found" });
+        }
         const parcel = await parcelsCollections.findOne({
           _id: new ObjectId(id),
         });
+        if (!parcel) {
+          return res.status(404).send({ success: false, message: "Parcel not found" });
+        }
         await logTracking(parcel, "reached-origin-warehouse");
 
-        if (result.modifiedCount > 0) {
-          invalidateParcelStatusChange({
-            trackingID: parcel.trackingID,
-            senderEmail: parcel.senderInfo?.email,
-            originHub: parcel.serviceCenters?.origin,
-            destinationHub: parcel.serviceCenters?.destination,
-            parcelId: id,
-          });
-          managerCache.bump("global");
-          res.send({
-            success: true,
-            message: "Parcel status updated to in-transit",
-          });
-        } else {
-          res.status(404).send({ success: false, message: "Parcel not found" });
-        }
+        invalidateParcelStatusChange({
+          trackingID: parcel.trackingID,
+          senderEmail: parcel.senderInfo?.email,
+          originHub: parcel.serviceCenters?.origin,
+          destinationHub: parcel.serviceCenters?.destination,
+          parcelId: id,
+        });
+        managerCache.bump("global");
+        res.send({
+          success: true,
+          message: "Parcel status updated to in-transit",
+        });
       } catch (error) {
-        res.status(500).send({ message: "Server Error", error: error.message });
+        res.status(500).send({ message: "Server Error", error: "Internal Server Error" });
       }
     },
     getMerchantParcels: async (req, res) => {
@@ -397,7 +412,7 @@ function createParcelController(dependencies) {
         res.setHeader("Content-Type", "application/json");
         res.send(jsonString);
       } catch (error) {
-        console.error("Error fetching unpaid parcels:", error);
+        console.error("Failed to fetch unpaid parcels");
         res
           .status(500)
           .send({ success: false, message: "Internal Server Error" });
@@ -426,7 +441,7 @@ function createParcelController(dependencies) {
         res.setHeader("Content-Type", "application/json");
         res.status(200).send(jsonString);
       } catch (error) {
-        console.error("Error loading filtered parcels:", error);
+        console.error("Failed to load filtered parcels");
         res.status(500).send({ message: "Internal Server Error" });
       }
     },

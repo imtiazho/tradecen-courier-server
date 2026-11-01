@@ -15,6 +15,14 @@ function clone(value) {
 function cursor(items) {
   return {
     sort() { return this; },
+    project(projection) {
+      items = items.map((item) => Object.fromEntries(
+        Object.entries(projection)
+          .filter(([, include]) => include)
+          .map(([field]) => [field, item[field]]),
+      ));
+      return this;
+    },
     toArray: async () => items,
   };
 }
@@ -146,9 +154,18 @@ function makeHarness({ failParcelUpdate = false, failTracking = false } = {}) {
   dependencies.ObjectId = class ObjectId {
     constructor(value) { this.value = value; }
   };
-  dependencies.verifyFireBaseToken = (_req, _res, next) => next();
+  dependencies.verifyFireBaseToken = (req, _res, next) => {
+    req.decoded_email = RIDER_EMAIL;
+    next();
+  };
+  dependencies.verifyRoles = () => (_req, _res, next) => next();
+  dependencies.verifyOwner = (_req, _res, next) => next();
   dependencies.verifyRiderToken = (_req, _res, next) => next();
   dependencies.verifyHubManagerToken = (_req, _res, next) => next();
+  dependencies.verifyAssignedHub = (req, _res, next) => {
+    req.assignedHubName = req.params.areaName || req.params.hubName;
+    next();
+  };
   dependencies.verifyAdminToken = (_req, _res, next) => next();
   dependencies.logTracking = async () => {
     if (failTracking) throw new Error("mock tracking failure");
