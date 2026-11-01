@@ -45,7 +45,7 @@ function createRouteDependencies({ admin, connectDB, withTransaction }) {
   const sortingCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
   const outForDeliveryCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
   const hubDeliveredCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
-  const riderCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
+  const riderCache = new NodeCache({ stdTTL: 60, checkperiod: 30 });
   const ridersCache = new VersionedCache({ stdTTL: 60, checkperiod: 120 });
   const availableRidersCache = new NodeCache({ stdTTL: 15, checkperiod: 30 });
   const returnWarehouseCache = new NodeCache({ stdTTL: 20, checkperiod: 40 });
