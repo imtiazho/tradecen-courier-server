@@ -95,10 +95,22 @@ dns.setServers(["8.8.8.8", "8.8.4.4"]);
 app.use(cors());
 app.use(express.json());
 
+app.use((error, req, res, next) => {
+  console.error(error);
+
+  res.status(error.statusCode || 500).send({
+    success: false,
+    message: error.message || "Internal Server Error",
+  });
+});
+
 const verifyFireBaseToken = async (req, res, next) => {
   const token = req.headers.authorization;
   if (!token || !token.startsWith("Bearer ")) {
-    return res.status(401).send({ message: "Unauthorized Access" });
+    return res.status(401).send({
+      success: false,
+      message: "Invalid authorization format",
+    });
   }
   try {
     const idToken = token.split(" ")[1];
@@ -106,7 +118,10 @@ const verifyFireBaseToken = async (req, res, next) => {
     req.decoded_email = decoded.email;
     next();
   } catch (err) {
-    return res.status(401).send({ message: "Unauthorized Access" });
+    return res.status(401).send({
+      success: false,
+      message: "Authentication token is required",
+    });
   }
 };
 
@@ -147,12 +162,10 @@ const verifyOwner = (req, res, next) => {
       .send({ success: false, message: "Email parameter is required" });
   }
   if (requestedEmail !== decodedEmail) {
-    return res
-      .status(403)
-      .send({
-        success: false,
-        message: "Forbidden: You cannot access other user's data",
-      });
+    return res.status(403).send({
+      success: false,
+      message: "Forbidden: You cannot access other user's data",
+    });
   }
   next();
 };
@@ -250,6 +263,15 @@ async function connectDB() {
   hqPaymentsCollections = db.collection("hqPaymentsCollections");
 
   await trackingLogsCollections.createIndex({ trackingID: 1, createdAt: -1 });
+  await userCollections.createIndex({
+    createdAt: -1,
+    _id: -1,
+  });
+  await userCollections.createIndex({
+    role: 1,
+    createdAt: -1,
+    _id: -1,
+  });
   await userCollections.createIndex({ email: 1 }, { unique: true });
   await userCollections.createIndex({ email: 1, role: 1 });
   await hubManagersCollection.createIndex({ email: 1 }, { unique: true });
@@ -413,41 +435,94 @@ function invalidateParcelStatusChange({
 /* ---- EXPRESS ROUTES START HERE ----*/
 
 /*---- User Related APIs ----*/
-app.get("/users", async (req, res) => {
-  try {
-    const searchText = req.query.searchText || "";
-    const role = req.query.role || "";
+app.get(
+  "/users",
+  verifyFireBaseToken,
+  verifyRoles("admin", "hub-manager", "rider", "merchant", "user"),
+  async (req, res) => {
+    try {
+      // Extract and sanitize query parameters
+      const searchText = (req.query.searchText || "").trim();
+      const role = (req.query.role || "").trim().toLowerCase();
 
-    const cachedData = usersCache.get("global", [searchText, role]);
-    if (cachedData) {
-      return res
-        .status(200)
-        .send({ success: true, data: cachedData, source: "cache" });
+      // validate and set default values for page and limit
+      const page = Number(req.query.page) || 1;
+      const limit = Number(req.query.limit) || 10;
+
+      if (
+        !Number.isInteger(page) ||
+        !Number.isInteger(limit) ||
+        page < 1 ||
+        limit < 1 ||
+        limit > 100 ||
+        searchText.length > 100
+      ) {
+        return res.status(400).send({
+          success: false,
+          message: "Invalid query parameters",
+        });
+      }
+
+      // 3. Cache Lookup
+      const cacheParams = [searchText, role, page, limit];
+      const cachedData = usersCache.get("global", cacheParams);
+
+      // 4. If cache hit, return cached data
+      if (cachedData) {
+        return res
+          .status(200)
+          .send({ success: true, ...cachedData, source: "cache" });
+      }
+
+      // 5. If cache miss, query the database
+      const { userCollections } = await connectDB();
+      const query = {};
+
+      if (searchText) {
+        query.$or = [
+          { displayName: { $regex: searchText, $options: "i" } },
+          { email: { $regex: searchText, $options: "i" } },
+        ];
+      }
+
+      if (role) query.role = role;
+
+      const skip = (page - 1) * limit;
+
+      const [data, total] = await Promise.all([
+        userCollections
+          .find(query)
+          .sort({ createdAt: -1, _id: -1 })
+          .skip(skip)
+          .limit(limit)
+          .project({
+            _id: 1,
+            email: 1,
+            displayName: 1,
+            role: 1,
+          })
+          .toArray(),
+
+        userCollections.countDocuments(query),
+      ]);
+
+      const response = {
+        data,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+
+      usersCache.set("global", cacheParams, response);
+      res.status(200).send({ success: true, ...response, source: "database" });
+    } catch (error) {
+      next(error);
     }
-
-    const { userCollections } = await connectDB();
-    const query = {};
-    if (searchText) {
-      query.$or = [
-        { displayName: { $regex: searchText, $options: "i" } },
-        { email: { $regex: searchText, $options: "i" } },
-      ];
-    }
-    if (role) query.role = role;
-
-    const result = await userCollections
-      .find(query)
-      .sort({ createdAt: -1 })
-      .limit(10)
-      .project({ email: 1, displayName: 1, role: 1 })
-      .toArray();
-
-    usersCache.set("global", [searchText, role], result);
-    res.status(200).send({ success: true, data: result, source: "database" });
-  } catch (error) {
-    res.status(500).send({ message: "Internal Server Error" });
-  }
-});
+  },
+);
 
 app.get("/user/:email", async (req, res) => {
   try {
@@ -574,12 +649,10 @@ app.patch(
       );
 
       if (updateResult.modifiedCount === 0) {
-        return res
-          .status(404)
-          .send({
-            success: false,
-            message: "User not found or role already updated",
-          });
+        return res.status(404).send({
+          success: false,
+          message: "User not found or role already updated",
+        });
       }
 
       const userProfile = await userCollections.findOne({ email: email });
@@ -673,12 +746,10 @@ app.get("/parcels/incoming/:hubName", async (req, res) => {
     incomingParcelsCache.set(cacheKey, result);
     res.send(result);
   } catch (error) {
-    res
-      .status(500)
-      .send({
-        message: "Error fetching incoming parcels",
-        error: error.message,
-      });
+    res.status(500).send({
+      message: "Error fetching incoming parcels",
+      error: error.message,
+    });
   }
 });
 
@@ -702,12 +773,10 @@ app.get(
       pickupCache.set(cacheKey, result);
       res.send(result);
     } catch (error) {
-      res
-        .status(500)
-        .send({
-          message: "Error fetching incoming parcels",
-          error: error.message,
-        });
+      res.status(500).send({
+        message: "Error fetching incoming parcels",
+        error: error.message,
+      });
     }
   },
 );
@@ -1446,12 +1515,10 @@ app.patch("/riders/complete-return-delivered/update", async (req, res) => {
       },
     );
     if (parcelUpdateResult.modifiedCount === 0) {
-      return res
-        .status(404)
-        .send({
-          success: false,
-          message: "Parcel not found or already updated",
-        });
+      return res.status(404).send({
+        success: false,
+        message: "Parcel not found or already updated",
+      });
     }
 
     const parcelData = await parcelsCollections.findOne({
@@ -1647,12 +1714,10 @@ app.patch("/parcels/return-hub/received/:parcelId", async (req, res) => {
     managerCache.bump("global");
 
     if (managerUpdate.matchedCount === 0) {
-      return res
-        .status(404)
-        .send({
-          success: false,
-          message: "Parcel not found in Hub Manager's return request ledger.",
-        });
+      return res.status(404).send({
+        success: false,
+        message: "Parcel not found in Hub Manager's return request ledger.",
+      });
     }
 
     const parcel = await parcelsCollections.findOne({
@@ -1717,12 +1782,10 @@ app.patch("/hub/dispatch-return-to-origin/:parcelId", async (req, res) => {
       { returnDocument: "after" },
     );
     if (!updatedParcel) {
-      return res
-        .status(404)
-        .send({
-          success: false,
-          message: "Parcel not found in warehouse registry.",
-        });
+      return res.status(404).send({
+        success: false,
+        message: "Parcel not found in warehouse registry.",
+      });
     }
     await logTracking(updatedParcel, "dispatched-back-to-origin-warehouse");
     await hubManagersCollection.updateOne(
@@ -2170,13 +2233,11 @@ app.post("/request-payout", async (req, res) => {
     });
 
     if (withdrawAmount > totalRevenue) {
-      return res
-        .status(400)
-        .send({
-          success: false,
-          message:
-            "Insufficient balance! You cannot withdraw more than your available balance.",
-        });
+      return res.status(400).send({
+        success: false,
+        message:
+          "Insufficient balance! You cannot withdraw more than your available balance.",
+      });
     }
 
     const baseParcelsInfo = deliveredParcels.map((parcel) => ({
@@ -2245,13 +2306,10 @@ app.patch("/approve-payout/:id", async (req, res) => {
 
     if (status === "Completed") {
       if (!trxID) {
-        return res
-          .status(400)
-          .send({
-            success: false,
-            message:
-              "Transaction ID (TrxID) is required for completed payouts.",
-          });
+        return res.status(400).send({
+          success: false,
+          message: "Transaction ID (TrxID) is required for completed payouts.",
+        });
       }
       await payoutsCollections.updateOne(
         { _id: new ObjectId(payoutId) },
@@ -2911,13 +2969,11 @@ app.get("/hub-hand-cash/:hubName", async (req, res) => {
   } catch (error) {
     const { hubName } = req.params;
     pendingHubRequests.delete(`hub_hand_cash_${hubName}`);
-    res
-      .status(500)
-      .send({
-        success: false,
-        message: "Internal Server Error",
-        error: error.message,
-      });
+    res.status(500).send({
+      success: false,
+      message: "Internal Server Error",
+      error: error.message,
+    });
   }
 });
 
@@ -3140,12 +3196,10 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
     } = req.body;
 
     if (!depositedAmount || !parcelIds || parcelIds.length === 0) {
-      return res
-        .status(400)
-        .send({
-          success: false,
-          message: "Missing required fields: depositedAmount or parcelIds",
-        });
+      return res.status(400).send({
+        success: false,
+        message: "Missing required fields: depositedAmount or parcelIds",
+      });
     }
 
     const depositInvoice = {
@@ -3179,22 +3233,18 @@ app.post("/deposit-HQ/:hubName", async (req, res) => {
       managerCache.bump("global");
     }
 
-    res
-      .status(201)
-      .send({
-        success: true,
-        message: "Deposit request submitted to HQ successfully!",
-        depositId: insertResult.insertedId,
-      });
+    res.status(201).send({
+      success: true,
+      message: "Deposit request submitted to HQ successfully!",
+      depositId: insertResult.insertedId,
+    });
   } catch (error) {
     console.error("Deposit HQ Error:", error);
-    res
-      .status(500)
-      .send({
-        success: false,
-        message: "Internal Server Error",
-        error: error.message,
-      });
+    res.status(500).send({
+      success: false,
+      message: "Internal Server Error",
+      error: error.message,
+    });
   }
 });
 
