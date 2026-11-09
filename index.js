@@ -5,6 +5,7 @@ const dotenv = require("dotenv");
 const dns = require("dns");
 const nodemailer = require("nodemailer");
 const NodeCache = require("node-cache");
+const { rateLimit } = require("express-rate-limit");
 
 class VersionedCache {
   constructor(options) {
@@ -95,13 +96,15 @@ dns.setServers(["8.8.8.8", "8.8.4.4"]);
 app.use(cors());
 app.use(express.json());
 
-app.use((error, req, res, next) => {
-  console.error(error);
-
-  res.status(error.statusCode || 500).send({
+const usersLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  limit: 10,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: {
     success: false,
-    message: error.message || "Internal Server Error",
-  });
+    message: "Too many requests. Please try again later.",
+  },
 });
 
 const verifyFireBaseToken = async (req, res, next) => {
@@ -437,9 +440,10 @@ function invalidateParcelStatusChange({
 /*---- User Related APIs ----*/
 app.get(
   "/users",
-  verifyFireBaseToken,
-  verifyRoles("admin", "hub-manager", "rider", "merchant", "user"),
-  async (req, res) => {
+  // verifyFireBaseToken,
+  // verifyRoles("admin", "hub-manager", "rider", "merchant", "user"),
+  usersLimiter,
+  async (req, res, next) => {
     try {
       // Extract and sanitize query parameters
       const searchText = (req.query.searchText || "").trim();
@@ -3600,6 +3604,15 @@ app.post("/reset-password", async (req, res) => {
   } catch (error) {
     res.status(500).send({ error: error.message });
   }
+});
+
+app.use((error, req, res, next) => {
+  console.error(error);
+
+  res.status(error.statusCode || 500).send({
+    success: false,
+    message: error.message || "Internal Server Error",
+  });
 });
 
 /* ---- START SERVER ---- */
